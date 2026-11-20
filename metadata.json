@@ -1,0 +1,8 @@
+{
+  "name": "Remix AuraFit",
+  "description": "Premium fitness, calorie, macronutrient, and daily activity tracking application.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
