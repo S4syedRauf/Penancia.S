@@ -8,16 +8,6 @@
 
 **Penancia.S** is an enterprise clinical semen analysis platform built on Microsoft Azure. It delivers automated video motility tracking, dual-model sperm head morphology classification, WHO 6th Edition (2021) diagnostic rule evaluation, and archival clinical PDF report generation.
 
-# Penancia.S — Azure-Native Semen Analysis Platform
-
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-132%2F132%20passed-success.svg)]()
-[![Framework](https://img.shields.io/badge/.NET-8.0%20LTS-purple.svg)]()
-[![Cloud](https://img.shields.io/badge/Azure-Native%20Architecture-0078D4.svg)]()
-[![Compliance](https://img.shields.io/badge/WHO-6th%20Edition%20(2021)-blue.svg)]()
-
-**Penancia.S** is an enterprise clinical semen analysis platform built on Microsoft Azure. It delivers automated video motility tracking, dual-model sperm head morphology classification, WHO 6th Edition (2021) diagnostic rule evaluation, and archival clinical PDF report generation.
-
 ---
 
 ## 🔬 Core Clinical Capabilities
