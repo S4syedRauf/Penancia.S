@@ -1,0 +1,51 @@
+## .NET Core / C#
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+## OS Files
+.DS_Store
+Thumbs.db
+
+## Temp / Test Results
+TestResults/
+*.trx
+*.coverage
+
+## Azure Functions local secrets — NEVER commit these
+src/*/local.settings.json
+
+## ASP.NET Core local overrides — NEVER commit these
+src/*/appsettings.Development.json
+src/*/appsettings.*.json
+!src/*/appsettings.json
+
+## Node / Frontend
+node_modules/
+dist/
+*.zip
+
+## Local AI-agent configuration
+.claude/
+
+## Local tool and workstation state
+/.foundry/
+.local/
+/.vscode/
+/Library/
+.aistudio/

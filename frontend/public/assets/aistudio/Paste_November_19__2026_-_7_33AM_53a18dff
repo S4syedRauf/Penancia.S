@@ -1,0 +1,1317 @@
+Sahatna — Developer Blueprint (Prototype / MVP)
+
+Stand-alone build guide for the developer agent. Read fully. Follow strictly.
+
+19 November 2026
+
+Table of Contents
+PART 0 — HOW TO USE THIS DOCUMENT
+0.1 Purpose
+This document is the single source of truth for building the Sahatna prototype: a male reproductive-health companion for the UAE. It covers what to build, how to build it, how data is stored, how every backend stage works, how the user is guided, and how each failure is handled so that no flow breaks the chain.
+
+0.2 Rules for the developer agent
+Build exactly what is written. Where this document says “VERIFY”, check the linked official page and record the result in docs/verification-log.md. Do not guess.
+Every stage of every flow has a defined failure state and a user message (Part 12). A stage may never end in a crash, a blank screen or a silent stop.
+Work in the phase order of Part 15. Do not start a later phase until the acceptance criteria of the earlier one pass.
+Where the product specification (the earlier Sahatna specification) provides content, use it as-is: the 26-question questionnaire in 5 blocks with “Prefer not to say”, the 74-day plan templates, and the clinician-approved urgent-care text. This document defines structure, not clinical content. Never invent clinical content.
+Plain language in every user-facing text. Calm, hopeful tone for anything about pain, worry or abnormal results.
+0.3 The four design rules (fixed, not negotiable)
+#
+Rule
+What it means in the build
+R1
+We do not provide an exact sperm count to users.
+Results are bands only: Low / Typical / Unclear for concentration and for motility. No number such as “42 million/mL” is ever shown for a home video. A number is shown only when it is copied from the user’s own laboratory report, labelled “from your lab report”.
+R2
+No single fertility score.
+The only summary is the 3-colour bar (Green / Yellow / Red) with the reason. It shows urgency and next step. It is not a fertility percentage.
+R3
+The app is a pre-screen, not a laboratory replacement.
+Every result screen says so in one plain sentence. Critical results route directly to a diagnostic centre.
+R4
+We never claim or promise 100% accuracy.
+Our goal is the best accuracy we can reach. We publish measured performance after validation. Until validated, results carry the label “Prototype pre-screen”. The word “accurate” is never used without a measured, dated figure.
+0.4 Decisions confirmed by the product owner (locked)
+#
+Decision
+Detail
+D1
+Mobile framework
+React Native (with Expo development builds, TypeScript). Not MAUI.
+D2
+Backend
+ASP.NET Core modular monolith on Azure, all personal data in the Azure UAE North region where the service exists. Where a service is not in UAE North, use the best Microsoft alternative in another region and mark it “Region exception” in the verification log. This is accepted for the prototype; the region can be changed later.
+D3
+Semen module is the core feature
+It must work end to end with either (a) a clip-on phone microscope lens or (b) a real microscope with a phone camera adapter. Both go through the same quality gate and the same server pipeline.
+D4
+No device
+If the user has neither, capture is disabled with a clear message and the rest of the app (questionnaire, report vault, plan, routing to a lab) keeps working.
+D5
+“Functional” means the whole chain works
+Every step from guidance to result is implemented and connected. Accuracy is a separate, measured property (R4).
+D6
+Noon
+No API. The AI proposes items, asks “Do you want me to find these on Noon?”, and gives a direct link or a copyable product name. A toggle “Auto-list products and offer to order from Noon” exists in Settings, shown as “Coming soon”, switched off and not functional in this release.
+D7
+Report vault
+User uploads reports (full, or with the personal-details area folded or covered). The app extracts and summarises every value with exact values and dates, stores the original, the summary and the full JSON in a dedicated vault, and the agent retrieves from it.
+D8
+Languages
+English by default. The app suggests Arabic (and later other UAE languages) based on the phone language. Arabic right-to-left is built and tested from day one.
+D9
+Output of this document
+One Word file in three parts: developer guide, user guide, semen-agent flow, plus a backlog.
+0.5 Assumptions used where the owner did not answer
+#
+Assumption
+Change by
+A1
+Team: 2–4 developers and one clinical advisor. Phases are sized for that.
+Owner
+A2
+Languages after English and Arabic (Urdu, Hindi, Malayalam, Tagalog) are Phase 3, and all clinical text translations need clinician review.
+Owner
+A3
+Prototype is for demonstration and a pilot with consenting volunteers. It is not a public medical release.
+Owner
+A4
+Azure OpenAI is used only to word explanations and answer questions from confirmed, de-identified values. It never makes a screening or semen decision.
+Owner
+A5
+The semen model is delivered in two modes: Demo/Prototype mode (works now, labelled “Prototype pre-screen, not validated”) and Validated mode (switched on only after the validation study in Section 6.12).
+Owner
+0.6 Glossary
+Term
+Meaning
+Band
+One of Low / Typical / Unclear.
+Quality gate
+Automatic check of video and setup before analysis. Fails safely to “Retake” or “Unclear”.
+Chamber
+Disposable slide of fixed, known depth. Depth is needed to turn a count in view into a concentration band.
+Vault
+The protected storage that holds uploaded reports, their summaries and the full JSON.
+Confirmed value
+A value the user has checked against the original report image and saved. Only confirmed values feed decisions or the agent.
+Outbox
+Database table used to publish messages reliably to the queue.
+PART 1 — PRODUCT SCOPE: EVERY FEATURE
+Each feature has an ID. The backlog in Part 16 refers to these IDs. All features exist in the prototype unless marked otherwise.
+
+ID
+Feature
+One-line description
+Status in prototype
+F1
+Onboarding and language
+Welcome, language, privacy summary, random username.
+Build
+F2
+Sign-up and sign-in
+Random username, no real name required. Optional email or phone for recovery.
+Build
+F3
+Consent centre
+Separate switches for each use of data. Withdraw any time.
+Build
+F4
+Questionnaire
+5 blocks, 26 questions, “Prefer not to say” on each.
+Build
+F5
+Screening result
+3-colour bar, reason, what we used, what is missing, next step. No score.
+Build
+F6
+Urgent route
+Clinician-approved urgent text and a direct route to a diagnostic centre.
+Build
+F7
+Report vault
+Upload, guided privacy fold, extraction, confirm, summary, vault storage.
+Build
+F8
+Home semen pre-screen
+Guided capture with clip-on lens or microscope, quality gate, analysis, bands, route.
+Build (core)
+F9
+74-day plan and Today screen
+Daily actions from approved templates. Missed days never reset the plan.
+Build
+F10
+Nutrition and Noon assist
+Personalised food suggestions, ask-then-link to Noon, copyable list, “coming soon” toggle.
+Build (links), auto-order later
+F11
+Wearables
+Sleep, resting heart rate, HRV, steps as habit and risk-factor trackers. Not fertility measurement.
+Build
+F12
+Ask agent
+Answers questions, navigates to features, reads confirmed vault data with permission.
+Build
+F13
+Care routing
+Lab and clinic directory, referral summary, share with expiry.
+Build (curated directory)
+F14
+Retest reminders
+Retest timing after a semen test or an abnormal result.
+Build
+F15
+Data rights
+Export, delete, withdraw consent, research opt-in.
+Build
+F16
+Demo mode
+Pre-recorded sample videos so judges can run the full semen flow without a device. Labelled as demo data.
+Build
+F17
+Admin and clinician tools
+Content versioning, rule versions, audit view. No browsing of user records.
+Build (minimal)
+PART 2 — TECHNICAL ARCHITECTURE
+2.1 Final stack
+Layer
+Choice
+Why
+Mobile app
+React Native + TypeScript, Expo development builds (not Expo Go), React Navigation, i18next
+Camera, ML bridges, HealthKit/Health Connect libraries, RTL, large community.
+Authentication
+Microsoft Entra External ID (consumer tenant), OIDC code flow with PKCE via react-native-app-auth or expo-auth-session
+Microsoft environment, no client secret in the app.
+API
+ASP.NET Core (current .NET LTS), modular monolith
+Single deployable unit, simple to operate.
+API hosting
+Azure App Service (Linux)
+Simple, UAE North available (VERIFY).
+Gateway
+Azure API Management (Developer tier for prototype)
+Token check, rate limits, versioning. Optional in the first sprint; required before pilot.
+Database
+Azure SQL Database
+Source of truth for structured data.
+Files
+Azure Blob Storage (private, no anonymous access)
+Reports, semen videos, vault JSON.
+Queue and workers
+Azure Service Bus + Azure Functions (or Container Apps jobs for heavy work)
+Reliable asynchronous processing.
+Semen inference
+Container (Azure Container Apps or Azure ML managed online endpoint) running ONNX Runtime, CPU first
+Versioned, replaceable model. VERIFY region.
+Report extraction
+Azure AI Document Intelligence (layout/read), then a rule-based parser, then optional LLM structuring
+Exact values, user confirms. VERIFY region.
+LLM
+Azure OpenAI (chat model deployment)
+Wording and conversation only. VERIFY region and model.
+Education search
+Azure AI Search over reviewed educational content only
+Never over personal data.
+Secrets
+Azure Key Vault + managed identity
+No secrets in code.
+Monitoring
+Azure Monitor + Application Insights with redaction
+No health data in logs.
+IaC and CI/CD
+Bicep, GitHub Actions with OIDC federation
+Repeatable deployment.
+Region rule: create every resource in UAE North if the service exists there. If not, use the nearest Microsoft region that has it (for example West Europe or Sweden Central for some AI models) and log a “Region exception” with the service name, region and what data flows to it. Personal identifiers never go to a region-exception service (Rule P3 in Section 13).
+
+VERIFY list for region availability (check, pick the current best, and record in the log):
+
+https://azure.microsoft.com/explore/global-infrastructure/products-by-region/
+https://learn.microsoft.com/azure/ai-foundry/openai/concepts/models (model and region table)
+https://learn.microsoft.com/azure/ai-services/document-intelligence/overview
+https://learn.microsoft.com/entra/external-id/
+https://learn.microsoft.com/azure/container-apps/overview
+2.2 System diagram (text)
+[React Native app]  --HTTPS-->  [API Management] --> [ASP.NET Core API on App Service]
+  |  secure token storage                             |  consent check, user scoping, rules
+  |  camera + on-device quality gate                  |
+  |  HealthKit / Health Connect (on device)           +--> [Azure SQL]  (structured data)
+  |                                                   +--> [Blob: reports | semen-video | vault-json]
+  +--OIDC/PKCE--> [Entra External ID]                 +--> [Key Vault]
+                                                      +--> [Service Bus] --> [Functions / Workers]
+                                                                                 |
+                         +-------------------------------------------------------+
+                         v
+    [Malware scan] -> [Document Intelligence] -> [Report summariser] -> SQL + vault-json
+    [Video integrity] -> [Semen inference container (ONNX)] -> [Banding + rules] -> SQL
+    [Azure OpenAI: wording only]   [AI Search: reviewed education only]
+
+2.3 Environments
+Environment
+Purpose
+Data
+dev
+Daily work
+Synthetic only
+test
+Automated tests
+Synthetic only
+staging
+Demo to judges and pilot rehearsal
+Synthetic and demo videos
+prod
+Pilot with consenting volunteers
+Real, consented
+Staging must never reach production data. Separate subscriptions or resource groups, separate Key Vaults, separate Entra apps.
+
+2.4 Module layout (backend)
+src/
+ Api/                      (controllers, auth, middleware)
+ Modules/
+   Identity/               (users, external identity map, consent)
+   Questionnaire/          (definitions, responses)
+   Screening/              (rules engine, colour, reasons)
+   Reports/                (upload, scan, extract, summarise, vault)
+   Semen/                  (kit profiles, sessions, pipeline orchestration, results)
+   Plan/                   (templates, actions, reminders)
+   Nutrition/              (food data, suggestions, Noon list)
+   Wearables/              (daily summaries)
+   Ask/                    (router, tools, answers, guardrails)
+   Care/                   (directory, referral, share grants)
+   Notifications/          (neutral push)
+   Admin/                  (content versions, audit)
+ Shared/                   (outbox, idempotency, audit, clock, result types)
+ Workers/                  (Service Bus handlers)
+tests/ (Unit, Integration, Contract, Security, E2E)
+ml/                         (training, evaluation, export, model registry notes)
+infra/                      (Bicep)
+
+Modules talk through interfaces, not HTTP. Each module owns its tables.
+
+PART 3 — ACCOUNTS, SIGN-IN AND CONSENT
+3.1 Account design
+The user chooses language, then gets a random username (for example “BlueFalcon-4821”) generated by the server. No real name is requested anywhere.
+Sign-in uses Entra External ID with OIDC authorization-code flow and PKCE through the system browser. Recovery uses email or phone, optional, set by the user in Settings. If the user sets none, the app warns clearly: “If you lose this phone and have no recovery method, we cannot restore your account.”
+The app never stores passwords. Tokens are stored in Keychain (iOS) or Keystore (Android) via expo-secure-store or react-native-keychain.
+The server maps (issuer, subject) to an internal random UserId. All queries use UserId from the validated token, never from the client.
+3.2 Consent centre (F3)
+Each consent is a separate switch with its own plain text, version and time. Withdrawing blocks new processing at once, checked on the server on every request.
+
+Consent key
+Plain text (summary)
+Needed for
+app_data
+Store my answers and plan in the app
+Everything
+reports_store
+Store my uploaded reports in my private vault
+F7
+reports_ai
+Let the assistant use my confirmed report values to answer me
+F12 using vault
+semen_media
+Store my semen video for analysis
+F8
+wearable_read
+Read sleep, heart and steps from my phone health app
+F11
+share_clinic
+Share a summary with a clinic I choose, for a time I choose
+F13
+research
+Use my de-identified data to improve the service
+Optional
+noon_assist
+Let the assistant suggest products and open Noon links
+F10
+Rules:
+
+Each consent has a version. A new version needs a new yes.
+“Prefer not to say” and “No” never block the core screening flow.
+Withdrawal of reports_store or semen_media starts the deletion lifecycle in Section 13.5.
+Consent state is also sent to workers in the message so a queued job re-checks consent before it runs.
+PART 4 — DATA MODEL AND STORAGE
+4.1 Principles
+SQL is the source of truth for structured records. No spreadsheet is ever a data store.
+Every health fact carries source (user, report, device, semen_pipeline, clinician), status (confirmed, unconfirmed, unknown, outdated), observed_at_utc, local_date, time_zone, unit.
+Missing is NULL, never zero. Unknown, estimated and missing are different states.
+Nothing is overwritten. A new answer, report or run creates a new record. History is kept.
+Every table row has user_id and the API filters by it. Row-Level Security in SQL is added as defence in depth, not as the only control.
+4.2 Tables
+Table
+Key columns
+users
+user_id (GUID), username, language, time_zone, created_at, deleted_at
+external_identities
+issuer, subject, user_id
+consents
+consent_id, user_id, key, version, state, changed_at
+questionnaire_definitions
+version, block, question_id, text_en, text_ar, answer_type, options_json
+questionnaire_responses
+response_id, user_id, definition_version, question_id, answer_json, status (answered / prefer_not_to_say / not_sure / not_answered), answered_at
+screening_runs
+run_id, user_id, rule_version, colour, urgency, reason_codes_json, used_json, missing_json, next_action, created_at
+observations
+obs_id, user_id, code, value, unit, status, source, source_record_id, observed_at_utc
+report_documents
+doc_id, user_id, blob_path, mime, sha256, state, created_at, deleted_at, privacy_mode (full / folded / unknown)
+report_extractions
+extraction_id, doc_id, engine_version, raw_json_blob_path, created_at
+report_values
+value_id, doc_id, test_code, test_name_as_written, ai_value, user_value, unit, ref_low, ref_high, flag, confidence, confirmed (bool), page, bbox_json
+report_summaries
+summary_id, doc_id, user_id, summary_json_blob_path, plain_text, schema_version, confirmed_at
+semen_kits
+kit_id, kit_name, type (clip_on / microscope_adapter / partner_kit), magnification, chamber_depth_um, field_width_um_default, active
+semen_sessions
+session_id, user_id, kit_profile_json, sample_meta_json, state, created_at
+semen_videos
+video_id, session_id, blob_path, sha256, duration_s, fps, width, height, quality_json
+semen_runs
+run_id, session_id, model_version, pipeline_version, state, result_json, band_conc, band_motility, overall_state, created_at
+plans / plan_actions
+plan_id, user_id, version, start_date; action_id, local_date, template_code, state
+health_metric_daily
+user_id, local_date, metric, value, source
+food_suggestions
+suggestion_id, user_id, local_date, items_json, noon_list_json, state
+conversations / memory_facts
+conversation_id; fact_id, user_id, text, confirmed
+care_referrals / share_grants
+referral_id, status; grant_id, provider, scope, expires_at
+outbox_messages
+id, type, payload_ids_only, state, attempts
+idempotency_records
+key, user_id, response_hash, created_at
+audit_events
+id, actor_type, action, target, at (no health content)
+4.3 Blob storage layout
+Storage account in UAE North, private endpoint where the SKU allows, anonymous access disabled, soft delete on, versioning on, lifecycle rules defined.
+
+Container
+Contents
+Naming
+quarantine
+Any new upload before scan
+{user_id}/{upload_id}
+report-originals
+Clean uploaded reports
+{user_id}/{doc_id}/original.{ext}
+report-json
+Full extraction and summary JSON
+{user_id}/{doc_id}/extraction.json, summary.json
+semen-video
+Clean semen videos
+{user_id}/{session_id}/{video_id}.mp4
+semen-artifacts
+Model overlays, per-frame counts, tracks
+{user_id}/{session_id}/{run_id}/...
+exports
+User-requested export packages
+expires in 7 days
+Encryption: Microsoft-managed keys in the prototype. Customer-managed keys later.
+
+4.4 The “vault” in simple words
+The vault is the combination of the report-originals, report-json containers and the report_values / report_summaries tables. A user’s vault holds: the uploaded file, the full extraction JSON, the confirmed summary, and an index by test and date. The agent reads only from confirmed summary data through a fixed tool (Section 7.3).
+
+PART 5 — REPORT VAULT: UPLOAD, PRIVACY, SUMMARY, STORAGE, RETRIEVAL
+5.1 What the user sees (guide, in order)
+Screen “Add a report”. Plain text: “Add your lab results so the assistant can use real values. You decide what to show.”
+Privacy note (always shown before upload): “Your report may show your name, date of birth, ID or phone number. You do not need to share these. Before you upload, you can fold the top of the paper, cover that part with your hand or a paper, or crop it in the app. You can also upload the full report if you prefer. We store a private copy only if you agree.”
+Choice: Take a photo / Choose a file (PDF, JPG, PNG) / Crop first. A crop tool lets the user black out the personal area. The app records privacy_mode as folded or full (user’s choice, for transparency only).
+Upload progress with the states of Section 5.3.
+Check screen (mandatory): the original image on one side, extracted rows on the other. Every row shows: test name, value, unit, reference range, flag, and confidence. The user taps “Matches” or edits the value. A field with low confidence is highlighted yellow. The user must confirm before saving.
+Save: “Nothing becomes part of your health record until you confirm it.”
+Done screen: summary card (date of report, lab name if visible, key values) and a button “Ask about this report”.
+5.2 Pipeline (backend)
+Client -> POST /v1/reports (metadata, consent check, quota)
+      -> upload stream to quarantine blob
+Worker 1: file validation (type by signature, size, page count, password check)
+Worker 2: malware scan (use Microsoft Defender for Storage if available in region, else ClamAV container; VERIFY)
+Worker 3: personal-data masking step (optional, see 5.4)
+Worker 4: OCR/layout: Azure AI Document Intelligence (prebuilt-layout/read)
+Worker 5: structuring: rule-based parser first; LLM structuring second (de-identified text only)
+Worker 6: auto-checks: units, ranges, arithmetic (total = concentration x volume), date sanity
+Worker 7: write report_values (unconfirmed) + extraction.json to vault
+Client check screen -> user confirms -> PATCH /v1/reports/{id}/confirm
+Worker 8: build summary.json + plain-text summary from CONFIRMED values only
+Worker 9: write observations; index for agent retrieval
+
+5.3 State machine
+Created -> Receiving -> Quarantined -> Scanning -> Extracting -> NeedsUserReview -> Confirmed -> Summarised
+                         |              |              |
+                         +-> Rejected   +-> Rejected    +-> ExtractionFailed -> ManualEntry (user types values) -> NeedsUserReview
+
+State
+User message
+Receiving
+“Your report is uploading securely.”
+Scanning
+“We are checking the file.”
+Extracting
+“We are reading your report. You can leave this screen.”
+NeedsUserReview
+“Please check each value against your report.”
+Rejected
+“We could not accept this file. Nothing was saved. Please try a PDF, JPG or PNG.”
+ExtractionFailed
+“We could not read this report. You can type the values yourself or upload a clearer photo.”
+Summarised
+“Your report is saved. The assistant can now use it, only if you allowed it.”
+A failure in any worker moves to a defined state and keeps the original in quarantine until the user retries or deletes. No state is left without a next action.
+
+5.4 Personal details (name, ID, phone)
+The user is told they can fold or crop. The app also offers auto-masking: after OCR, any text in the header region matching name, ID, phone, email or date-of-birth patterns is not copied into report_values, not sent to any LLM and not written to the summary. Only test values, units, ranges, report date, lab name and test names are kept.
+The original file is stored as uploaded (the user chose what it shows). It is never given to an LLM. Only structured, de-identified text is.
+5.5 Summary content (exact values, exact dates)
+The summary must keep every value as written. No rounding, no unit conversion unless a verified conversion exists, and then both original and converted values are stored.
+
+summary.json schema (version 1):
+
+{
+ "schema_version": 1,
+ "doc_id": "GUID",
+ "report_date": "2026-10-03",
+ "report_type": "semen_analysis | hormones | blood_count | urine | scan | other",
+ "lab_name_as_written": "string or null",
+ "abstinence_days": 3,
+ "values": [
+   {
+     "test_code": "SEMEN_CONC",
+     "test_name_as_written": "Sperm concentration",
+     "value": 14.2,
+     "unit": "million/mL",
+     "ref_low": 16,
+     "ref_high": null,
+     "flag": "low | normal | high | none",
+     "confirmed_by_user": true,
+     "source_page": 1
+   }
+ ],
+ "free_text_findings": ["verbatim lines from the report"],
+ "not_found": ["fields expected for this report type but absent"],
+ "plain_text_summary": "Short plain-language summary built only from the values above."
+}
+
+Rules:
+
+plain_text_summary is generated from the values by a template. An LLM may reword it, but a validator then checks that every number and date in the reworded text exists in values. If not, the template text is used.
+Reference ranges are stored as written by the lab. We do not replace them with our own.
+Unknown fields stay null.
+The summary is versioned. If the user later corrects a value, a new summary version is written and the old one kept.
+5.6 Retrieval by the agent
+The agent has one tool, get_report_summary(doc_id | type, date_range), that:
+
+Checks the reports_ai consent on the server.
+Returns only confirmed_by_user = true values.
+Returns value, unit, date, flag, reference range, source report id.
+Never returns names, IDs or the original file.
+The agent must cite the report date in each answer: “In your report from 3 October 2026, concentration was 14.2 million/mL (lab reference 16 or more).”
+
+5.7 Conflict handling
+If a report value conflicts with a questionnaire answer or an earlier report, both stay visible with dates, and the app asks “Which is current?”. It never overwrites silently.
+
+PART 6 — HOME SEMEN PRE-SCREEN (CORE FEATURE F8)
+6.1 What it is, and what it is not
+It is a guided pre-screen. The user records short videos of a semen sample in a fixed-depth chamber under magnification. The system returns two bands (concentration and motility), each Low / Typical / Unclear, a 3-colour next-step bar, and a route to a lab when needed.
+
+It is not a laboratory replacement (R3), it gives no exact count (R1), no fertility score (R2), and no accuracy promise (R4). Morphology (sperm shape) and DNA damage are not read from the video. If the user has a lab report with those values, the vault shows them as “from your lab report”.
+
+6.2 Supported setups (all must work through the same pipeline)
+Setup
+Hardware
+Notes
+S-A Clip-on lens kit
+Phone + clip-on microscope lens (about 300x class) + disposable fixed-depth chamber
+Primary consumer route. Kit profile has known magnification and chamber depth.
+S-B Real microscope + phone adapter
+Laboratory or student microscope with phase contrast or bright-field, phone held by an eyepiece adapter or camera-port adapter, fixed-depth chamber
+Judges may evaluate this route. Needs the calibration step in 6.5.
+S-C Partner analyser
+Reserved. Not built in prototype.
+Phase 3 option.
+None
+No lens or microscope
+Capture disabled. Message and routing in 6.10.
+The user picks the setup at the start. The app stores it as a setup profile (device model, setup type, objective magnification, chamber type, calibration result, date).
+
+6.3 User guide (screens, in order, plain language)
+The guide is scripted, not written by an LLM. Each screen has text, an image or short animation, and a “Done” or “I need help” button. “I need help” opens the Ask agent, limited to this guide’s content.
+
+Step 1 — Before you start. “This test gives you an early idea. It does not replace a lab test. We show bands, not exact numbers. If anything looks wrong, we will tell you to see a clinician.”
+
+Step 2 — What you need. A checklist with photos: supported lens or microscope, fixed-depth chamber slides, clean sterile container, gloves, a timer, a clean flat table, a bright steady light (for clip-on), tissue and a closed bin bag. Button: “I have a lens”, “I have a microscope”, “I have neither”.
+
+Step 3 — Prepare the sample. (Clinical text to be approved by the clinical advisor; defaults from WHO guidance, VERIFY.)
+
+Abstain from ejaculation for 2 to 7 days before. Enter the number of days.
+Wash hands. Collect the sample in a clean, sterile container. No lubricant, no saliva, no condom unless it is a semen-collection condom.
+Keep the sample close to body temperature. Do not put it in the fridge or in the sun.
+Wait 30 minutes for it to turn thin and watery. Start the test within 1 hour of collection.
+Note the time. The app starts a timer and warns if the sample is too old.
+Step 4 — Set up the device. Different screens for S-A and S-B, with pictures.
+
+S-A: attach the clip-on lens exactly over the main camera, switch off the torch unless the kit says otherwise, place the chamber, let the app auto-detect that the image is magnified.
+S-B: attach the phone to the eyepiece or camera port, choose the objective and condition (phase or bright-field), and complete Calibration (6.5).
+Step 5 — Load the chamber. Mix gently. Place one small drop (volume given by the kit) in the chamber. Do not press. Wait for the drop to settle for about 30 seconds.
+
+Step 6 — Find a good field. Live camera view with on-screen guidance: “Move the slide slowly”, “Turn the focus until the small heads look sharp”, “Too dark”, “Too bright”, “Too many cells close together”, “Too few cells, move to another area”. The Capture button turns green only when the quality gate passes (6.6).
+
+Step 7 — Record. The app records short clips, one per field: 5 fields minimum, 10 fields maximum, each 10 seconds, at 30 fps or higher, at least 1080p. After each clip the app says “Move to a new area, the slide must not be the same spot”. It stops early when it has seen enough cells for a reliable band, or when 10 fields are done.
+
+Step 8 — Upload. Resumable upload with a progress bar. If the phone loses signal, the clips stay encrypted on the phone and upload later. The user can close the app.
+
+Step 9 — Result. See 6.9.
+
+Step 10 — Clean-up. Safety text: treat the sample as a biological material. Wear gloves, dispose of the chamber and wipes in a closed bag, clean the lens and table.
+
+Step 11 — Next step. The retest reminder (F14) is offered. A second sample 1 to 2 weeks later is recommended by default for a more dependable picture (clinical advisor to confirm).
+
+6.4 Kit profiles and chamber depth
+Concentration needs three facts: how many cells are in view, the area in view and the depth of liquid. The depth comes from the chamber.
+
+semen_kits table stores the known chamber depth (for example 10 µm or 20 µm) for each supported chamber, and default field width.
+If the user uses a chamber not in the list, the app asks for the depth printed on the chamber or its box. If the depth is unknown, concentration band = Unclear (reason: depth unknown), and the pipeline still produces a motility band. The chain continues; one result is simply marked Unclear.
+An ordinary slide and cover slip (unknown depth) is not accepted for concentration.
+6.5 Calibration (needed for S-B, optional check for S-A)
+Goal: convert pixels to micrometres, so cell size and speed make sense.
+
+The user photographs a stage micrometer (a slide with a ruler, usually 10 µm divisions) under the same objective and phone setup. If the chamber has a printed grid with a known spacing, that grid can be used.
+The server (or the app) detects the line spacing and computes µm per pixel. It stores the value, the objective and the date in the setup profile.
+Calibration quality is checked: the spacing detection must find at least 8 lines and the spacing must be consistent within 3%. If not: “Please retake the ruler image.”
+If calibration is missing or fails: concentration = Unclear and velocity measures are not used. Motility uses the “moving versus not moving” ratio only and the band is widened. The pipeline still finishes.
+A re-calibration prompt appears if the setup profile is older than 30 days or the user changes the phone, adapter or objective.
+6.6 On-device quality gate (runs live and on each clip)
+Implemented with VisionCamera frame processors or a native module, using simple fast image measures. Thresholds are configuration values stored in appsettings and delivered by the API (/v1/config/semen-gate) so they can be tuned without a new app release. Starting values (tune in the pilot):
+
+Check
+Method
+Start value
+Resolution
+Camera format
+At least 1920x1080
+Frame rate
+Camera format
+At least 30 fps (prefer 60)
+Focus
+Variance of Laplacian on centre area
+Above device-calibrated minimum; show “sharp” or “blurry”
+Exposure
+Histogram: share of clipped pixels
+Under 2% clipped dark, under 2% clipped bright
+Auto-adjust lock
+Lock exposure, focus and white balance after the user taps “Lock”
+Must be locked during recording
+Stage drift
+Global optical-flow shift between frames
+Under 1.5 pixels per second average (static slide), because drift ruins tracking
+Sample density
+Quick count of dark/bright small blobs per frame
+Between a minimum and a maximum; shows “too dense” or “too sparse”
+Torch and zoom
+Torch off for clip-on, digital zoom fixed
+Required
+Clip length
+Timer
+10 seconds
+Temperature note
+User chooses “room” or “37 °C stage”
+Stored as metadata; room temperature widens motility band
+If a clip fails: the app says exactly why and offers “Retake this field”. It never uploads a failed clip silently. The server repeats the same checks (Stage S5) because the server cannot trust the phone.
+
+6.7 Server pipeline: the stages (the “agents” of the semen flow)
+Each stage is an independent worker with one job, one input, one output, one failure state. An orchestrator (a state machine stored in SQL, advanced by Service Bus messages) moves a session from stage to stage. The chain is complete in the sense that every stage always ends in either “passed to next stage” or a defined fallback result, never in silence.
+
+S0 Intake Agent        -> checks consent semen_media, session exists, kit profile, sample metadata (days of abstinence, time since collection)
+S1 Setup Agent         -> validates setup profile and calibration, decides which outputs are allowed (conc, motility)
+S2 Upload Agent        -> verifies chunk completeness, sha256, duration, fps, resolution
+S3 Safety Scan         -> file signature and malware scan; rejects non-video content
+S4 Frame Prep Agent    -> decodes video, stabilises, crops to usable circle/field, normalises contrast
+S5 Quality Agent       -> repeats the quality gate; per-clip pass, marginal or fail; sets which clips are usable
+S6 Detection Agent     -> finds sperm heads per frame (model, or classical fallback)
+S7 Tracking Agent      -> links detections into tracks (ByteTrack/OC-SORT); computes VCL, VSL, VAP, STR (if calibrated)
+S8 Feature Agent       -> per-field counts, motile fraction, progressive fraction, size sanity, debris ratio, density
+S9 Banding Agent       -> turns features into bands with uncertainty (6.8)
+S10 Rules Agent        -> combines bands with questionnaire and earlier runs into colour + next step (6.9)
+S11 Explanation Agent  -> builds the user text from templates; an LLM may only reword, then a validator checks it
+S12 Storage Agent      -> writes results, artifacts, audit, observations; sets retest reminder
+S13 Routing Agent      -> if Red or Unclear twice, shows lab options and creates a referral draft for the user to review
+
+Stage contract (applies to every stage):
+
+Input is read from SQL/Blob by IDs in the message. Messages contain IDs only.
+The handler is idempotent: if it runs twice for the same (session_id, stage, attempt) it produces the same result and no duplicates.
+Output is written, then the next message is published through the outbox.
+On error: retry up to 3 times with backoff; then move to the stage’s fallback state (table below) and publish the fallback result. Dead-letter after that and raise an alert.
+Every stage writes stage_log (stage, start, end, outcome code). No health values in logs.
+Stage
+Fallback if it cannot complete
+What the user sees
+S0
+Session Blocked (no consent)
+“Please allow video storage to continue.” with a button to the consent centre
+S1
+Concentration and/or motility disabled, continue
+“We can only estimate motility with your setup.”
+S2
+Session UploadIncomplete
+“Some video did not upload. Tap to continue the upload.”
+S3
+Session Rejected
+“This file could not be accepted. Please record again.”
+S4
+Clip excluded
+“One clip could not be read, we used the others.” If all fail: Unclear
+S5
+Clip excluded or whole session RetakeNeeded
+“Video quality was too low. Here is what to fix.”
+S6
+Switch to classical detector, else Unclear
+Result shows Unclear with reason
+S7
+Motility Unclear
+Same
+S8
+Bands Unclear
+Same
+S9
+Bands Unclear
+Same
+S10
+Yellow with reason “could not complete assessment” (never Green)
+“We could not finish. Please repeat or book a lab test.”
+S11
+Use template text without LLM
+Plain template text
+S12
+Retry; result held in queue and shown from memory
+“Saving your result”
+S13
+Show lab list directly from the app cache
+Lab list
+A pipeline failure never produces Green.
+
+6.8 Models and algorithms
+Detection. Preferred: a lightweight detector (YOLOX-s or RT-DETR, both Apache-2.0) fine-tuned on the VISEM-Tracking dataset (CC BY 4.0; 20 patients, 400x phase-contrast videos, annotated boxes and tracks; VERIFY the licence at https://datasets.simula.no/visem-tracking/) and then on our own pilot videos from clip-on and microscope setups. Do not use Ultralytics YOLO in a distributed product unless the commercial licence is bought (AGPL-3.0). Export to ONNX. Run with ONNX Runtime on CPU first.
+
+Classical fallback (must exist; keeps the chain working before any custom model is trained). Background subtraction and difference of Gaussians to find small bright or dark blobs of expected size (using µm/pixel when known), Kalman filter and Hungarian assignment for tracks. This fallback is also used when the detector’s confidence on the clip is low. It is less accurate and the result is labelled accordingly in the audit record.
+
+Tracking. ByteTrack or OC-SORT (MIT). Keep tracks of at least 1 second (30 frames).
+
+Motility measures. Per track: VCL, VSL, VAP, straightness STR = VSL/VAP. Default classes (configurable, clinical advisor to confirm; VERIFY against WHO manual and CASA conventions): progressive if VAP at or above 25 µm/s and STR at or above 0.8; non-progressive if moving but not progressive; immotile if VAP under 5 µm/s. If calibration is missing, only “moving versus not moving” is used.
+
+Concentration estimate (internal only). For each usable field: mean number of detected heads per frame divided by (field area x chamber depth), averaged across fields. The internal record keeps the estimate and a confidence interval from the spread across fields. These numbers are never sent to the user’s app (R1).
+
+Banding rule (internal). Reference lower limits (WHO 6th edition, 2021): concentration 16 million/mL; total motility 42%; progressive motility 30%. VERIFY at https://www.who.int/publications/i/item/9789240030787.
+
+Concentration: Low if the upper end of the confidence interval is below 16. Typical if the lower end is at or above 16. Otherwise Unclear.
+Motility: Low if the upper end of the interval for progressive motility is below 30%. Typical if the lower end is at or above 30%. Otherwise Unclear.
+If fewer than 200 cells were assessed in total (WHO precision rule of thumb) the interval is wider, so more results fall in Unclear. This is intended: Unclear is a valid, safe answer.
+Room temperature widens the motility interval by a configured amount.
+If a model’s calibration error exceeds the validated limit, or the input is outside the training conditions (out-of-distribution check), the band is Unclear.
+Models are versioned. semen_runs.model_version and pipeline_version are saved with every run. A model can be disabled with a feature flag, and the system falls back to Unclear without a code release.
+
+Numeric leakage test (mandatory). An automated test inspects every API response and every client log for numeric concentration, percent motility or velocity values from the pipeline. If found, the build fails (R1).
+
+6.9 Result screen and 3-colour bar
+Result screen elements, top to bottom:
+
+The label “Prototype pre-screen” while in Demo/Prototype mode (A5), or “Pre-screen, validated on [date], performance published here” in Validated mode.
+Two chips: Concentration band and Motility band, each Low / Typical / Unclear, with a one-line plain reason.
+The 3-colour bar and the sentence for the colour (always with the reason).
+Next step button (retest, book lab, learn).
+One fixed sentence: “This is a pre-screen. It does not replace a laboratory test.”
+“What we used and what we could not use” list.
+Colour rules (the clinical advisor must approve these rules before any pilot):
+
+Condition
+Colour
+Text direction
+Both bands Typical on a valid run, no urgent answers, quality good
+Green
+“No concerns found from this pre-screen. Repeat in 3 months or sooner if you worry.” (never “you are fertile”)
+One band Low or Unclear, or one run only
+Yellow
+“A few factors to work on and recheck. Repeat in 1 to 2 weeks, follow the plan, consider a lab test.”
+Both bands Low in two valid runs, or no sperm seen in all fields, or urgent questionnaire answers (pain, swelling, injury, blood), or pipeline could not finish twice
+Red
+“Please see a clinician. We can help you book a laboratory test.”
+Pipeline failure
+Yellow at best, never Green
+“We could not finish. Please repeat or book a lab test.”
+“No sperm seen” wording: “We did not see any sperm in this sample. This can happen for several reasons, including a poor sample or setup. It needs a laboratory test to understand. Please book one.” Calm tone.
+
+Repeat guidance when abnormal: retest after at least 11 to 12 weeks for a lab-confirmed pattern (WHO 2025), sooner if the result is grossly abnormal (NICE NG257). The app shows the “recheck in 1 to 2 weeks” for the home pre-screen to repeat a doubtful reading, and the “lab at about 3 months” for lab-confirmed change. Clinical advisor to confirm wording. VERIFY: https://www.nice.org.uk/guidance/ng257
+
+6.10 Users with no device (D4)
+When the user taps “I have neither”:
+
+Capture is disabled. Message: “To record, you need a clip-on microscope lens or a microscope with a phone adapter. Without it we cannot look at a sample.”
+Three buttons: “See supported kits” (curated list, links only, no claims), “Book a laboratory test” (Care directory), “Continue with questions and my reports” (F4, F7, F5).
+The user is never stuck. The screening result and plan still work.
+6.11 Demo mode (F16, for judges)
+A setting available only in staging builds, or on production when the user turns on “Demo mode”.
+
+Offers 3 to 5 sample videos (for example from VISEM-Tracking, CC BY 4.0, with attribution) as if they were the captured clips. They run through the real pipeline from S2 onward.
+Every screen shows a banner “Demo data. Not your sample.”
+Results from demo mode are stored in a separate flag and never used for plans, reminders or research.
+Also supports “microscope route demo”: a judge can point a phone at a real microscope slide, and the live flow works as in S-B.
+6.12 Validation programme (to switch from Prototype to Validated mode)
+Required before the word “validated” appears anywhere:
+
+Protocol approved by the ethics route a UAE clinic partner requires (DoH Abu Dhabi: https://www.doh.gov.ae/ ; Dubai Health: https://www.dha.gov.ae/ ; VERIFY which applies).
+Paired data: for each participant, a laboratory semen analysis from the same sample (within 1 hour), plus the home capture. Minimum 150 participants as a first target, spread over both setups and at least 3 phone models. Collected by donor, so no donor appears in both training and testing.
+Reported: sensitivity for Low bands, specificity, the false-Typical rate (target under 5%), the share of Unclear results, and confidence intervals, per setup and per phone model. We publish what we measure. If it is lower than 85 to 90%, we publish the lower number.
+External test: at least one setup and one clinic not used in training.
+Drift monitoring: weekly checks of Unclear rate, quality-gate failure rate, and lab agreement on a sample of referred users.
+A named person can suspend the feature in minutes (feature flag).
+Reference evidence for expectations (summaries, verify before quoting): Hagobogo Pro, SpermCell, YO (FDA K241628) and LensHooke X3 PRO (FDA K242830). All validated phone systems use a clip-on lens and a fixed-depth chamber. A bare phone camera has no validation.
+
+6.13 Regulatory note
+Treat the semen module as potential Software as a Medical Device in the UAE. Sources disagree on whether the Emirates Drug Establishment or MOHAP is the authority (Federal Decree-Law 38/2024); the DoH and DHA have their own AI policies. This is not legal advice. Before any public release, the owner must get written advice from a UAE regulatory adviser. The prototype stays within “pilot with consenting volunteers, not a public medical release” (A3).
+
+PART 7 — THE AI AGENTS
+7.1 Principle
+There are four assistants. None of them diagnoses, scores, or decides a screening colour. The screening rules and the semen pipeline are deterministic code. LLMs only talk, word, and navigate.
+
+Agent
+Job
+Can read
+Cannot do
+Ask agent
+Answer questions, point to app features, explain results and reports
+Confirmed vault summaries, screening summary, plan status, approved education
+Diagnose, change a colour, give medication or supplement doses, order anything
+Nutrition agent
+Suggest foods and fruits for the day and build the Noon list
+Plan, questionnaire diet answers (with consent), confirmed lab values (with consent)
+Prescribe a diet for a disease, claim a food improves fertility
+Report summariser
+Structure extracted values and write the summary
+De-identified extracted text
+See names or IDs, invent a value
+Semen guide
+Show the scripted capture guide and answer questions about the steps
+Only the guide content
+Interpret results beyond the template text
+7.2 Ask agent: controlled workflow (not autonomous)
+User question
+-> API: token check, user scoping, consent check
+-> Safety router (rules + small classifier): urgent words (severe pain, swelling, injury, blood, thoughts of self-harm) -> show approved urgent text first
+-> Intent router: FEATURE_NAV | RESULT_EXPLAIN | REPORT_QUESTION | NUTRITION | EDUCATION | OUT_OF_SCOPE
+-> Tool calls (read-only, server-side, user context supplied by the server)
+-> LLM drafts the answer from tool outputs only
+-> Validator: every number/date appears in tool output; no banned claims; language matches
+-> Answer with source labels (for example "from your report of 3 Oct 2026")
+
+Tools (the model sends only parameters; the server adds the user):
+
+Tool
+Returns
+get_screening_summary()
+Latest colour, reasons, used, missing
+get_semen_result_summary(session_id?)
+Bands, reasons, date (no numbers, R1)
+get_report_summary(type?, date_range?)
+Confirmed values from vault (needs reports_ai)
+get_plan_status()
+Today’s actions, adherence
+get_wearable_trend(metric, days)
+Daily summaries (needs wearable_read)
+search_education(topic_code)
+Reviewed education snippets (Azure AI Search)
+find_feature(name)
+Deep link and one-line description (the navigation catalogue 7.4)
+propose_noon_items(items)
+Creates a Noon list for the user to review (7.5)
+The model never gets a user_id, a name, a phone number, raw files or the full health record.
+
+Guardrail prompts (summary for the system prompt): speak plainly; calm and hopeful on pain or worry; never say “you are infertile” or “you are fertile”; never give a number for a home semen result; say it is a pre-screen; for symptoms from the urgent list, show the approved urgent text first; if unsure, say you cannot answer from saved information and suggest the feature or a clinician.
+
+7.3 “This feature already exists, go here” (navigation answers)
+Whenever the user asks for something the app can already do, the agent must answer with a short reply and a button that opens the screen, not with a long explanation.
+
+User asks
+Agent answers
+Button
+“How do I test my sample?”
+“You can do a home pre-screen with a clip-on lens or a microscope.”
+Open Semen pre-screen
+“Where are my lab results?”
+“They are saved in your Reports.”
+Open Report vault
+“Add a report”
+“You can upload it here. You can fold or cover your name first.”
+Add report
+“What should I eat today?”
+“I can suggest foods for today.”
+Open Nutrition
+“Find these on Noon”
+“I can make a list and open Noon links.”
+Noon list
+“Book a lab”
+“Here are labs and clinics.”
+Care directory
+“Change language” / “Delete my data”
+Short answer
+Settings, Data rights
+The catalogue is a table app_features(code, title_en, title_ar, deep_link, description) that the find_feature tool reads. If a feature is “Coming soon” (for example automatic Noon ordering) the agent says so.
+
+7.4 Azure OpenAI use and regions
+Deploy a chat model in the same resource group if the model exists in UAE North; if not, use the nearest region that has it and log a Region exception (D2). VERIFY the current model and region table: https://learn.microsoft.com/azure/ai-foundry/openai/concepts/models
+Prototype data rule: only de-identified, confirmed values and de-identified text go to the model, nothing else. Names, IDs, phone numbers, files, and raw video never go.
+Turn on content filtering. Do not enable data sharing for model improvement. Keep abuse-monitoring settings as the service requires; check the data-handling page: https://learn.microsoft.com/legal/cognitive-services/openai/data-privacy
+Configuration switch Ask:LlmMode = Off | TemplatesOnly | Full. With Off or TemplatesOnly, the agent works through reviewed templates and tool output, so the app does not break if the LLM is down or not approved.
+No fine-tuning in the prototype.
+7.5 Nutrition and Noon (F10)
+Goal. Each day, based on the user’s plan, questionnaire and (with consent) confirmed lab values, the app suggests foods and fruits that are generally part of a balanced diet that supports sperm health, then helps the user find them on Noon.
+
+Content rules. Suggestions come from a reviewed food list (food_catalogue table: item, category, Arabic name, allergy tags, notes, source). Use general dietary guidance. No claims such as “this food increases sperm count”. Respect allergies and dietary choices from the questionnaire. Supplements and doses are never suggested. VERIFY a food-composition source suitable for the UAE.
+
+Flow:
+
+Nutrition screen shows today’s ideas (for example fruits, nuts, fish, vegetables) with a short reason each.
+The agent asks: “Do you want me to find any of these on Noon?” with checkboxes.
+The user selects items. The server builds the list:
+Item name exactly as it will be searched (English and Arabic).
+Search link per item.
+A Copy list button and a Copy name button per item.
+“Open in Noon” opens the link in the phone browser or the Noon app if installed.
+The user is told: “Prices and stock are shown by Noon, not by us.”
+Link format. Noon has no public customer API (we did not find one; VERIFY at https://www.noon.com and https://developers.noon.com). Link strategy, in order of preference:
+
+Direct product link, only if it was added by a curator and checked (stored in food_catalogue.noon_url, verified_on date).
+Search link for the item. The expected pattern is https://www.noon.com/uae-en/search/?q=<URL-encoded term>. The developer must open this pattern in a browser and confirm it returns search results; if the pattern is different, change NoonLinkBuilder and record the correct one. Arabic pages use uae-ar.
+Copyable name, always available as the final fallback.
+Toggle “Auto-list products and offer to order from Noon”. In Settings > Shopping. Displayed with a “Coming soon” badge. Switched off and not tappable. It stores nothing. The database has a column noon_assist_mode with value links_only today and reserved values partner_catalog, partner_checkout for the future. No order, price, stock or delivery status is shown or claimed in this release.
+
+No personal data to Noon. Only the item name is in the URL. No health text, no user ID.
+
+7.6 Report summariser
+Described in Part 5. LLM structuring is optional; the rule-based parser comes first. The validator must confirm that every value in the LLM output appears in the OCR text and in the same table row. If not, the row is marked unconfirmed with low confidence and the user decides on the check screen.
+
+PART 8 — QUESTIONNAIRE, SCREENING AND PLAN
+8.1 Questionnaire (F4)
+Content: use the approved questionnaire (5 blocks, 26 questions) from the product specification without change, with “Prefer not to say” and “Not sure” on every question. Store with definition_version. The client renders from the definition JSON so a content change needs no app release. Arabic text comes from text_ar after clinical review.
+
+8.2 Screening engine (F5, F6)
+Deterministic, versioned, unit tested. Input: confirmed answers, confirmed lab values, last valid semen run(s), plan adherence flags (never decisive). Output: colour, urgency (Routine, Timely, Urgent), reasons, used, missing, next action, rule version.
+
+Missing information is not “normal” and is not automatically Yellow. The rules say what to do.
+Green means no concern found from the information available. It is never proof of fertility.
+Wearable data never changes a colour.
+Urgent answers always show the approved urgent text immediately and on the device (local copy for offline).
+A new input creates a new run. History is kept.
+Rule-set changes are released as a separate artefact with clinical approval and rollback.
+8.3 74-day plan (F9)
+Reason: the sperm production cycle is about 74 days. Plan templates come from the product specification. Rules: one plan version per user; daily actions are created for the user’s local date (store UTC and IANA time zone); missed days never reset the plan; progress text such as “Good day” or “Not enough information”, never a score; no automatic medication, supplement or strenuous-exercise advice.
+
+PART 9 — WEARABLES (F11)
+Purpose: a habit and risk-factor tracker for sleep, resting heart rate, HRV and steps. It does not measure fertility, testosterone or sperm. State this in the app in one plain sentence.
+
+Platform
+Source
+Permissions
+iOS
+HealthKit via react-native-health or Expo-compatible module
+Per-category read permission
+Android
+Health Connect via react-native-health-connect
+Per-category; history permission for older than 30 days; background read if needed
+Data handling: read on the device; send only daily summaries (sleep duration, sleep midpoint, resting HR, HRV RMSSD when available, steps) with source and date. Missing data stays NULL. Health Connect has no ECG or recovery type (verified in earlier research, VERIFY again). Garmin and others reach Health Connect only for some fields, so the UI shows “not available from your device” and never invents values. VERIFY: https://developer.android.com/health-and-fitness/health-connect and https://developer.apple.com/documentation/healthkit
+
+Use in the app: show 7 and 28-day trends and habit nudges (for example regular sleep time). Evidence note shown to users: sleep and stress affect general and hormonal health; effects on sperm are small and uncertain; the app uses this as encouragement, not as a result.
+
+PART 10 — MOBILE APP (REACT NATIVE)
+10.1 Project setup
+TypeScript strict mode; Expo SDK current stable with development builds (EAS Build) because we need native camera and health modules.
+Navigation: React Navigation. State: Redux Toolkit or Zustand. Data fetching: TanStack Query with offline persistence.
+Localisation: i18next with en and ar; I18nManager.forceRTL set from language; use logical styles (start/end), mirrored icons, and test every screen in RTL. Default English; on first launch, if the phone language is Arabic (or another UAE language later), show a one-tap suggestion “Switch to Arabic?”.
+Accessibility: screen-reader labels, large-text support, contrast, no colour-only meaning (the 3-colour bar always has a word and icon).
+Secure storage: Keychain/Keystore. Encrypted local DB (SQLCipher or MMKV with encryption) only for the minimum offline data: today’s plan, urgent text, queued uploads.
+Push: neutral text only (“Your check-in is ready”). Never put health content on the lock screen.
+10.2 Libraries (confirm current versions, VERIFY)
+Need
+Library
+Camera, frame processors for the quality gate
+react-native-vision-camera (+ frame processor plugins)
+Image/video processing for the gate
+OpenCV via a native module or react-native-fast-opencv
+Chunked, resumable upload
+react-native-background-upload or tus protocol client; or Azure Blob block upload via the API-issued short-lived SAS
+Auth
+react-native-app-auth or expo-auth-session
+Secure storage
+expo-secure-store or react-native-keychain
+Health
+react-native-health, react-native-health-connect
+Charts
+victory-native or react-native-svg
+Document pick, crop
+expo-document-picker, expo-image-picker, a crop component with a blackout tool
+Notifications
+Firebase Cloud Messaging and APNs through expo-notifications
+10.3 Screens
+Splash, language, privacy summary, username
+Sign-in and recovery
+Home (3-colour bar, Today actions, shortcuts)
+Questionnaire (one question per screen, progress, “Prefer not to say”)
+Screening result and reason
+Urgent screen
+Semen pre-screen: intro, checklist, sample prep, device setup, calibration, field finder, record, upload, waiting, result
+Reports: list, add, crop, check, summary
+Plan and Today
+Nutrition and Noon list
+Wearables
+Ask (chat) with buttons
+Care directory, share summary
+Settings: language, consent centre, data export and deletion, Noon “Coming soon”, demo mode (staging)
+About: “pre-screen, not a lab”, measured performance page (Validated mode)
+10.4 Distribution
+Platform
+Prototype and demo
+Real users
+Android
+APK built by EAS for direct install (allow “install unknown apps”)
+Google Play, AAB. https://developer.android.com/studio/publish
+iOS
+TestFlight (needs Apple Developer Program, about USD 99 per year; up to 10,000 testers). https://developer.apple.com/testflight/
+App Store review; health apps get extra review
+There is no way to give iPhone users an installable file outside the App Store or TestFlight in the UAE. Builds for iOS need macOS: use EAS Build or GitHub Actions macOS runners.
+
+10.5 Offline behaviour
+Today’s plan, urgent text, queued uploads, and drafts of answers work offline.
+Semen videos are recorded to encrypted local storage and uploaded when online, resumable.
+Nothing that changes a screening result is calculated on the phone, except the urgent text trigger. The server re-applies the rules.
+Mutating calls carry an Idempotency-Key header, so a retry after weak signal never duplicates.
+PART 11 — API SURFACE (v1)
+All routes require a valid token, check consent on the server, and use the UserId from the token. All responses use one error shape: { "code": "...", "message_en": "...", "message_ar": "...", "retry": true|false }.
+
+Method and route
+Purpose
+POST /v1/users/init
+Create user from token, return username
+GET/PUT /v1/consents
+Read and set consents
+GET /v1/questionnaire/current ; PUT /v1/questionnaire/answers
+Definition and answers
+POST /v1/screening/runs ; GET /v1/screening/latest
+Run and read screening
+POST /v1/reports ; GET /v1/reports ; GET /v1/reports/{id} ; PATCH /v1/reports/{id}/confirm ; DELETE /v1/reports/{id}
+Vault
+GET /v1/semen/kits ; PUT /v1/semen/setup
+Kit list, setup profile
+POST /v1/semen/calibration
+Upload ruler image, return calibration status
+POST /v1/semen/sessions ; POST /v1/semen/sessions/{id}/videos (chunked) ; POST /v1/semen/sessions/{id}/complete
+Session lifecycle
+GET /v1/semen/sessions/{id}
+State and result (bands only)
+GET /v1/config/semen-gate
+Quality-gate thresholds
+GET /v1/plan/today ; POST /v1/plan/actions/{id}/complete
+Plan
+GET /v1/nutrition/today ; POST /v1/nutrition/noon-list
+Suggestions, Noon list
+POST /v1/wearables/daily
+Daily summaries
+POST /v1/ask
+Ask agent
+GET /v1/care/providers ; POST /v1/care/shares
+Directory, share
+POST /v1/data/export ; DELETE /v1/data
+Data rights
+GET /v1/features
+Feature catalogue and flags
+PART 12 — FAILURE HANDLING: NO BROKEN CHAIN
+Rule: every step has a fallback, a user message, and a recorded state. The user can always continue to a next useful action.
+
+Failure
+Required behaviour
+No internet during capture
+Record and store locally encrypted; show “Saved. Will upload when you are online.”
+Upload interrupted
+Resume from the last chunk; verify sha256 on completion
+Phone storage full
+Stop before recording; ask to free space; never lose the earlier clips
+App killed during recording
+On reopen, show the incomplete session with “Continue” or “Discard”
+Token expired
+Silent refresh; if it fails, sign in again and resume the queued action
+Azure SQL unavailable
+No new screening result; show cached plan; queue idempotent actions
+Blob unavailable
+Keep local copy; retry; show “waiting”
+Service Bus delivery twice
+Idempotent handler, no duplicate result or notification
+Worker crash mid-stage
+Message returns to the queue; stage retried; dead-letter after 3 tries; alert
+Inference service down or slow
+Session in Waiting; neutral push when done; after 10 minutes show “still working, you can close the app”; after 60 minutes offer retry or lab route
+Model throws or confidence out of range
+Result Unclear with reason, never Green
+Document Intelligence down
+Manual entry route for report values
+Azure OpenAI down or not approved
+Ask works in TemplatesOnly mode with tool output and templates
+AI Search down
+Education falls back to a static reviewed page
+Noon link pattern changes
+Copyable list always works; admin updates NoonLinkBuilder
+Push fails
+In-app Today screen is the source of truth
+Conflicting data
+Show both with dates and ask the user
+User withdraws consent while a job is queued
+Job re-checks consent and stops without writing
+Clock or time-zone change
+Store UTC plus IANA zone; plan actions keyed by (user, plan, local_date, action) unique
+Service levels for the prototype (targets to test, not guarantees): API availability 99.5% in pilot hours; semen result within 3 minutes for 90% of sessions; report extraction within 2 minutes for 90% of reports.
+
+PART 13 — SECURITY, PRIVACY, DATA HANDLING, LOGGING
+13.1 Rules
+ID
+Rule
+P1
+TLS everywhere. Managed identities for service to service. No keys in code.
+P2
+Every request is scoped by UserId from the validated token. Test cross-user access at API, repository, worker and AI-tool layers.
+P3
+Personal identifiers never go to a service outside UAE North. De-identified, confirmed values may, if listed as a Region exception.
+P4
+Logs never contain report text, values, symptoms, prompts, model answers, phone numbers, tokens or SAS URLs. Application Insights telemetry processors redact.
+P5
+The random username is the only identifier shown. No real name collected.
+P6
+Staff cannot browse user records. Support access is by explicit, time-limited user grant and is audited.
+P7
+Reports and videos are stored only with consent and are deletable. No WORM retention on user health files.
+P8
+Uploads go to quarantine first. Never read as clean until the scan finishes.
+P9
+Direct-to-Blob upload (if used) uses short-lived user-delegation SAS limited to one blob, upload-only, never logged. Otherwise stream through the API.
+P10
+Storage with private endpoints where the SKU allows; anonymous access off.
+13.2 What we store with consent (reports)
+For each report: original file, full extraction JSON, confirmed summary JSON, values table, audit trail of AI value vs user value, and the check-screen image reference. The user sees all of it in the app and can delete it.
+
+13.3 Where the JSON lives
+report-json/{user_id}/{doc_id}/extraction.json (every text element the OCR returned, with positions and confidence, header region masked) and summary.json (Section 5.5). Both are in the UAE North storage account.
+
+13.4 UAE obligations to confirm (not legal advice)
+Counsel must confirm: Federal Decree-Law 45/2021 (personal data protection) and its executive regulations; the federal health-data law on ICT in health fields (Federal Law 2/2019) including local storage and retention; DoH Abu Dhabi and DHA Dubai requirements including AI policies and mobile health app registration; Malaffi (Abu Dhabi) and NABIDH (Dubai) only if clinic exchange is added. Start points: https://u.ae/en/about-the-uae/digital-uae/data/data-protection-laws ; https://www.doh.gov.ae/ ; https://www.dha.gov.ae/ .
+
+13.5 Deletion lifecycle
+On “Delete this report/video/all my data”: mark deleted; remove blobs and versions after soft-delete window; remove derived rows (values, summaries, observations, caches, conversation memory, search indexes if any, exports); keep a minimal audit record that deletion happened; explain backup expiry and any legal retention exception in plain words.
+
+13.6 Research opt-in
+Off by default. When on, de-identified data may be used to improve models. A user can withdraw; future use stops. Videos for model training need a separate, explicit consent.
+
+PART 14 — DEVOPS, TESTING, RELEASE
+14.1 CI/CD
+Infrastructure in Bicep. GitHub Actions with OIDC federation to Azure (no stored secrets).
+Pipeline: lint, unit tests, integration tests with a test SQL container, contract tests against the API spec, dependency and secret scans, mobile build (EAS), accessibility and RTL snapshot checks.
+Database migrations by expand-and-contract. Staging uses synthetic data only.
+Screening rules, clinical content, prompts, quality-gate thresholds and model versions are separate, versioned artefacts with approval and rollback.
+14.2 Test plan (all mandatory)
+Screening rule boundary tests for every colour.
+Numeric leakage test (R1): no pipeline number reaches the client.
+Semen pipeline: golden videos for each outcome (Typical, Low, Unclear, no sperm, too dense, blurry, drift, missing calibration, unknown depth). Each must reach a result state.
+Chain-break test: inject a failure into each stage S0 to S13; the session must reach its documented fallback.
+Idempotency: replay every message twice.
+Consent withdrawal mid-job.
+Report pipeline: malformed, oversized, password-protected, scanned, rotated, Arabic, low-light files; auto-masking of header text.
+Cross-user access (API, workers, AI tools).
+Ask agent: grounding test set (each number must be traceable); navigation catalogue test; urgent-word routing; no-diagnosis test.
+Arabic RTL on every screen; screen reader; large text.
+Offline and weak-signal flows.
+Load: 200 concurrent sessions in staging; queue age alert.
+Restore test of SQL point-in-time recovery and blob soft delete.
+Security: dependency scan, secrets scan, an external penetration test before pilot.
+14.3 Monitoring
+Dashboards: API latency and errors, queue age, dead-letter count, stage failure rate, Unclear rate, quality-gate failure rate, upload resume rate, Ask fallback rate, LLM latency. Alerts page the on-call developer. No health content in telemetry.
+
+PART 15 — PHASES
+Phase
+Weeks (2–4 devs)
+Contents
+Exit criteria
+0 Verify and set up
+1–2
+Region and service verification log, Entra tenant, resource groups, repos, CI/CD, RN project, clinical advisor sign-off on text and rules, Noon link check
+Verification log complete; empty app deploys; sign-in works
+1 Core app
+3–6
+F1–F6, F9, F15, Care directory, consent centre, RTL, offline basics
+All Part 16 acceptance criteria for E1–E5 pass
+2 Report vault and Ask
+7–9
+F7, F12, nutrition and Noon list (F10), wearables (F11)
+E6, E7, E8, E9 pass
+3 Semen pre-screen
+10–15
+F8, F14, F16: setup, calibration, quality gate, pipeline S0–S13, classical fallback, first model, demo mode
+E10, E11 pass; chain-break tests pass
+4 Pilot hardening
+16–18
+Pen test, load test, accessibility, clinical review of all Arabic text, ethics approval, paired data collection start
+Pilot go/no-go checklist signed
+5 Validation and later
+After pilot
+Validated mode, more languages, partner analyser, Noon partner mode
+Published performance report
+Pilot go/no-go checklist: verification log complete; clinical advisor approved rules and text; legal advice received; pen-test critical issues fixed; restore test passed; consent and deletion tested end to end; numeric leakage test green; feature flags for semen and Ask tested.
+
+PART 16 — MVP BACKLOG: EPICS, STORIES, ACCEPTANCE CRITERIA
+Format: Story → Acceptance criteria (AC). Each AC is testable.
+
+E1 — Onboarding, accounts and consent (F1, F2, F3)
+E1-S1 As a new user I pick a language and see a privacy summary. AC: English is default; if phone language is Arabic a “Switch to Arabic?” prompt shows; layout flips to RTL; summary text is under 120 words.
+E1-S2 As a user I get a random username and sign in without a real name. AC: no field asks for name; username unique; token stored in secure storage; sign-in via PKCE.
+E1-S3 As a user I can set a recovery method later. AC: warning is shown if none is set; recovery restores the same UserId.
+E1-S4 As a user I control each consent separately. AC: eight switches per Section 3.2; withdrawal blocks the related API within one request; version change prompts again.
+E2 — Questionnaire (F4)
+E2-S1 As a user I answer 26 questions in 5 blocks. AC: one question per screen; “Prefer not to say” and “Not sure” on every question; progress saved after each answer; resume works after app kill.
+E2-S2 As a user I can change an answer. AC: a new response row; earlier row kept; a new screening run is created.
+E3 — Screening and urgent route (F5, F6)
+E3-S1 As a user I see a 3-colour bar with the reason. AC: word and icon with colour; reasons, used and missing lists shown; no number or percentage anywhere.
+E3-S2 As a user with urgent answers I see approved urgent text at once. AC: shown within 1 second, works offline; server re-evaluates.
+E3-S3 As a user in Red I can book a diagnostic centre. AC: provider list; referral summary preview; sharing has provider, scope and expiry.
+E3-S4 Rules versioning. AC: each run stores rule version; changing rules does not alter old runs.
+E4 — Plan and Today (F9)
+E4-S1 As a user I get a 74-day plan. AC: actions per local date; unique constraint prevents duplicates; missed days do not reset the plan.
+E4-S2 As a user I get neutral reminders. AC: no health words in notification text.
+E5 — Data rights (F15)
+E5-S1 Export. AC: package of all user data within 24 hours; link expires in 7 days.
+E5-S2 Delete. AC: all blobs, rows, caches and memory removed per Section 13.5; confirmation shown; deletion audit kept without health content.
+E6 — Report vault (F7)
+E6-S1 Privacy guidance before upload. AC: note about folding, covering or cropping is shown on every upload; crop tool with blackout works.
+E6-S2 Upload and scan. AC: file types and size enforced; quarantine first; infected or invalid files rejected with the defined message.
+E6-S3 Extraction and masking. AC: values, units, ranges, dates extracted from the golden report set with at least 95% of fields correct on clean PDFs (target, measure and publish); header personal data never appears in report_values, summary or LLM input.
+E6-S4 User check and confirm. AC: original and extracted fields side by side; low-confidence highlighted; unconfirmed values never reach decisions or the agent.
+E6-S5 Summary JSON. AC: schema v1 validates; exact values and dates preserved; plain_text_summary numbers all present in values.
+E6-S6 Manual entry fallback. AC: if extraction fails the user can type values and still reach Summarised.
+E6-S7 Report list and delete. AC: delete removes original, JSON and derived rows.
+E7 — Ask agent and navigation (F12)
+E7-S1 As a user I ask about app features and get a button. AC: the seven navigation rows in Section 7.3 open the correct screens; coming-soon features are named as such.
+E7-S2 As a user I ask about my report. AC: answer cites report date; every number traceable to confirmed values; works only with reports_ai; with consent off the agent offers to open the Reports screen.
+E7-S3 Safety. AC: urgent words trigger approved text first; the agent never states fertile or infertile, never gives doses; never gives a number for a home semen result.
+E7-S4 Degraded mode. AC: with Ask:LlmMode = TemplatesOnly the app still answers navigation and result questions.
+E8 — Nutrition and Noon (F10)
+E8-S1 As a user I see today’s food suggestions. AC: from reviewed catalogue; allergy tags respected; Arabic names present.
+E8-S2 As a user I choose items and get a Noon list. AC: agent asks first; each item has a search link and a copy button; list has a copy-all; only the item name is in the URL.
+E8-S3 Coming-soon toggle. AC: shown in Settings as disabled with the badge; no network call; no stored data.
+E8-S4 Link check. AC: NoonLinkBuilder pattern verified manually and recorded; a health-check job opens one sample link weekly and alerts on failure.
+E9 — Wearables (F11)
+E9-S1 As a user I connect Health Connect or HealthKit. AC: per-category permission; disconnect stops sync; missing values stay NULL.
+E9-S2 As a user I see 7 and 28-day sleep and heart trends. AC: source labelled; one-line note that this is not a fertility measurement.
+E10 — Semen setup, capture and quality gate (F8, part 1)
+E10-S1 Setup choice. AC: S-A, S-B or “neither”; setup profile saved; “neither” disables capture and shows the three buttons of 6.10.
+E10-S2 Guided preparation. AC: all steps of 6.3 shown in order; abstinence days and collection time recorded; timer warns after 1 hour.
+E10-S3 Calibration. AC: ruler image gives µm per pixel with 3% consistency; failure message; setup profile stores value and date.
+E10-S4 Live quality gate. AC: Capture button enabled only when gate passes; each failing check shows a specific message; thresholds come from /v1/config/semen-gate.
+E10-S5 Multi-field recording. AC: 5 to 10 fields of 10 seconds each; the app prompts to move the slide between fields; stops early only after the minimum.
+E10-S6 Resumable upload. AC: kill the app and lose connection mid-upload; upload resumes; hash matches on the server.
+E11 — Semen pipeline and result (F8, part 2; F14; F16)
+E11-S1 Orchestrated stages S0 to S13. AC: each stage idempotent; each logs outcome; chain-break test passes for every stage (Part 14.2 item 4).
+E11-S2 Detection and tracking. AC: model and classical fallback both produce tracks on the golden set; fallback is used when model confidence is low.
+E11-S3 Banding. AC: bands follow the rule in 6.8; fewer than 200 cells widens intervals; unknown depth gives concentration Unclear and motility still produced.
+E11-S4 Result screen. AC: two chips, 3-colour bar, fixed pre-screen sentence, “Prototype pre-screen” label; numeric leakage test passes.
+E11-S5 Routing. AC: Red, or Unclear twice, shows labs and a referral draft the user can review.
+E11-S6 Retest reminder. AC: reminder created with the user’s chosen time; neutral push text.
+E11-S7 Demo mode. AC: sample videos run the full pipeline; banner “Demo data” shown; demo results are excluded from plans, reminders and research.
+E11-S8 Feature flags. AC: semen module, model version and Ask LLM mode can be changed without a release.
+E12 — Care directory and sharing (F13)
+E12-S1 Curated directory of labs and clinics with contact route. AC: no booking claimed unless an integration exists.
+E12-S2 Share summary. AC: user previews the content; specific provider, purpose and expiry; revocable.
+E13 — Platform, security and operations
+E13-S1 Infrastructure as code. AC: a new environment deploys from Bicep without manual steps.
+E13-S2 Logging redaction. AC: automated test proves no health text in logs.
+E13-S3 Outbox and queue reliability. AC: kill a worker mid-job; result still completes once.
+E13-S4 Backup and restore. AC: restore drill documented and passed.
+E13-S5 Verification log. AC: every VERIFY item in this document has a date, result and owner.
+PART 17 — USER GUIDE SUMMARY (WHAT THE USER IS TOLD AT EACH POINT)
+Moment
+Message
+First open
+“Sahatna helps you understand your reproductive health privately. We do not ask for your name.”
+Before the questionnaire
+“These questions take about 5 minutes. You can choose ‘Prefer not to say’ any time.”
+Result
+“This is a pre-screen. It shows direction, not a diagnosis. It does not replace a laboratory test.”
+Yellow
+“A few things to work on and recheck. This is common and often improves with time.”
+Red
+“Please see a clinician. We can help you book a laboratory test.”
+Before report upload
+The privacy note in 5.1
+Before semen test
+The Step 1 text in 6.3
+No device
+The text in 6.10
+Unclear result
+“We could not be sure from this video. That does not mean something is wrong. You can retake it or book a lab test.”
+Noon
+“Prices and stock are shown by Noon. We only help you find the items.”
+Wearables
+“Your watch helps track habits like sleep. It cannot measure fertility.”
+PART 18 — VERIFICATION LIST (CHECK BEFORE BUILDING; RECORD RESULTS)
+I could not browse live pages while writing this. Open each page, choose the best currently available version, and record the result. Links are given in full.
+
+#
+What to verify
+Where
+V1
+Azure services available in UAE North (App Service, SQL, Storage, Service Bus, Functions, Key Vault, Container Apps, Document Intelligence, AI Search, Azure ML, Monitor)
+https://azure.microsoft.com/explore/global-infrastructure/products-by-region/
+V2
+Azure OpenAI model and region table; data and privacy page
+https://learn.microsoft.com/azure/ai-foundry/openai/concepts/models ; https://learn.microsoft.com/legal/cognitive-services/openai/data-privacy
+V3
+Entra External ID tenant location options and mobile sign-in sample
+https://learn.microsoft.com/entra/external-id/
+V4
+Document Intelligence region and language support (Arabic)
+https://learn.microsoft.com/azure/ai-services/document-intelligence/overview
+V5
+Malware scanning option in region (Defender for Storage or container scanner)
+https://learn.microsoft.com/azure/defender-for-cloud/defender-for-storage-introduction
+V6
+Noon search URL pattern and any official partner or API page
+https://www.noon.com/uae-en/ ; https://developers.noon.com
+V7
+Health Connect data types, permissions and history limits
+https://developer.android.com/health-and-fitness/health-connect
+V8
+HealthKit categories
+https://developer.apple.com/documentation/healthkit
+V9
+React Native libraries versions (VisionCamera, health modules)
+https://reactnative.dev ; https://docs.expo.dev ; https://github.com/mrousavy/react-native-vision-camera
+V10
+WHO semen manual reference limits and abstinence guidance
+https://www.who.int/publications/i/item/9789240030787
+V11
+NICE NG257 retest guidance
+https://www.nice.org.uk/guidance/ng257
+V12
+VISEM-Tracking licence and download
+https://datasets.simula.no/visem-tracking/
+V13
+FDA summaries of validated phone-based semen devices: YO K241628, LensHooke X3 PRO K242830
+https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfpmn/pmn.cfm
+V14
+UAE regulation: SaMD authority, health data law, DoH and DHA app and AI rules
+https://u.ae/en/about-the-uae/digital-uae/data/data-protection-laws ; https://www.doh.gov.ae/ ; https://www.dha.gov.ae/
+V15
+Apple Developer Program and TestFlight; Google Play publishing
+https://developer.apple.com/programs/ ; https://developer.apple.com/testflight/ ; https://developer.android.com/studio/publish
+V16
+Licence of every ML library used (avoid AGPL in the shipped app)
+Each repository’s LICENSE file
+PART 19 — OPEN POINTS FOR THE OWNER (NOT BLOCKING THE BUILD)
+Which competition or pilot deadline applies? This sets how much of Phase 3 is shown to judges first. Default: Phases 0 to 3 in order.
+Will a partner kit be chosen, or will the project use generic clip-on lenses? Default: generic clip-on lens and microscope adapter, with kit profiles added one by one.
+Who is the clinical advisor who signs the rules and Arabic text? Needed before the pilot.
+Which clinic or laboratory will do the paired validation tests? Needed for Validated mode.
+Honest expectation: in Prototype mode, results are labelled “Prototype pre-screen”. The accuracy you can state comes only from the validation programme in 6.12.

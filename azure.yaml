@@ -1,0 +1,32 @@
+# Penancia.S — Azure Developer CLI (azd) manifest.
+#
+# Services match the real projects in this repo:
+#   api      -> src/Penancia.S.Api (ASP.NET Core, deployed to Container Apps)
+#   workflow -> src/Penancia.S.Workflow (Durable Functions, C# isolated worker)
+#   infra    -> infra/main.bicep (Bicep; defaults: location uaenorth,
+#               prefix penancias, environment dev)
+#
+# Removed 2026-11-21: the stale `my-agent` Foundry prompt service, its empty
+# model, the generic "helpful AI assistant" instruction, and the hard-coded
+# external AI-project endpoint URL. There is no frontend in this repo, so no
+# Static Web App service is defined.
+#
+# Note: the Api image is built from the repo-root Dockerfile. If `azd up`
+# cannot locate a Dockerfile under src/Penancia.S.Api, build and push the
+# image manually (docker build from the repo root, push to ACR) and set the
+# apiImageTag Bicep parameter instead.
+name: penancias
+metadata:
+  template: penancias@1.0.0
+infra:
+  provider: bicep
+  path: infra
+services:
+  api:
+    project: src/Penancia.S.Api
+    host: containerapp
+    language: dotnet
+  workflow:
+    project: src/Penancia.S.Workflow
+    host: function
+    language: dotnet

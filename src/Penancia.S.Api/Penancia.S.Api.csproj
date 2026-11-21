@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Penancia.S.Api</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.8" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.2" />
+    <PackageReference Include="Microsoft.Identity.Web" Version="3.1.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.7.3" />
+    <PackageReference Include="Azure.Storage.Blobs" Version="12.21.2" />
+    <!-- Azure.Identity: DefaultAzureCredential for BlobServiceClient (user-delegation SAS, #6). Same version as Penancia.S.Workflow. -->
+    <PackageReference Include="Azure.Identity" Version="1.13.1" />
+    <!-- #46 (revised 2026-11-21): Microsoft.EntityFrameworkCore.Design is referenced
+         here ONLY so 'dotnet ef' works — the EF tools require the Design package in
+         the STARTUP project, even though the Api has no migrations (migrations + the
+         Design reference also live in Penancia.S.Data). PrivateAssets=all: it never
+         ships in production DLLs. Do not remove it again without checking 'dotnet ef'.
+         Microsoft.Data.SqlClient is KEPT: Program.cs now uses SqlConnectionStringBuilder
+         (#42) to force TrustServerCertificate=False. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.8">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Penancia.S.Domain\Penancia.S.Domain.csproj" />
+    <ProjectReference Include="..\Penancia.S.Data\Penancia.S.Data.csproj" />
+  </ItemGroup>
+
+</Project>

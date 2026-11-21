@@ -1,62 +1,92 @@
-# Penancia.S — Azure-Native Semen Analysis Platform
+# Penancia.S Semen Analysis Platform
 
-[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-132%2F132%20passed-success.svg)]()
-[![Framework](https://img.shields.io/badge/.NET-8.0%20LTS-purple.svg)]()
-[![Cloud](https://img.shields.io/badge/Azure-Native%20Architecture-0078D4.svg)]()
-[![Compliance](https://img.shields.io/badge/WHO-6th%20Edition%20(2021)-blue.svg)]()
+A full-stack reproductive-health application with a bilingual React frontend, local Express services, and an Azure-native .NET backend for auditable semen-analysis workflows. The repository includes the patient experience, image-derived research pre-screen reports, versioned REST APIs, Durable Functions orchestration, infrastructure, and automated tests.
 
-**Penancia.S** is an enterprise clinical semen analysis platform built on Microsoft Azure. It delivers automated video motility tracking, dual-model sperm head morphology classification, WHO 6th Edition (2021) diagnostic rule evaluation, and archival clinical PDF report generation.
+## Repository layout
 
----
+- `frontend/` — React 19 + TypeScript patient application and Express development server.
+- `src/Penancia.S.Api/` — versioned REST API and direct-upload SAS endpoints.
+- `src/Penancia.S.Domain/` — dependency-free clinical calculations and reporting rules.
+- `src/Penancia.S.Data/` — EF Core persistence and migrations.
+- `src/Penancia.S.Workflow/` — deterministic Durable Functions orchestration and model-job dispatch.
+- `infra/` — parameterized Azure Bicep infrastructure and deployment scripts.
+- `tests/` — .NET domain test suite.
+- `docs/` — clinical and architecture documentation.
 
-## 🔬 Core Clinical Capabilities
+## Run the application locally
 
-- **WHO 2021 Rules Engine**: Deterministic C# clinical logic for Concentration, Motility (PR/NP/IM), Kruger Strict Morphology, and Vitality reference limits.
-- **Dual-Model Computer Vision**: Ensemble architecture using **CBAM-ResNet** and **MADRNet** for morphology consensus and non-sperm debris filtering.
-- **Dual Medical Sign-off**: Hard server-side security gate enforcing that the signing pathologist or doctor is distinct from the data enterer (`SignerId != DataEntererId`).
-- **Guarded AI Narrative**: Generative clinical summaries via **Microsoft Foundry** protected by strict anti-hallucination guardrails and automatic deterministic fallbacks.
-- **Archival Reports**: High-fidelity, tamper-evident PDF/A reports generated through Gotenberg container services.
+### Prerequisites
 
----
+- Node.js and npm
+- .NET 8 SDK for backend development and tests
 
-## ☁️ Cloud Architecture & Tech Stack
+### Frontend and local application services
 
-- **API Gateway**: ASP.NET Core 8 Web API with short-lived User Delegation SAS tokens for direct, zero-memory media streaming to Blob Storage.
-- **Orchestration**: Azure Durable Functions isolated worker coordinating the 7-phase clinical sample lifecycle.
-- **Persistence & Audit**: Azure SQL Database (Serverless `GP_S_Gen5_1`, auto-pauses when idle) with immutable event sourcing (`SampleEvents`).
-- **Asynchronous Messaging**: Azure Service Bus with 12 dedicated job queues for parallel computer vision models.
-- **Serverless Containers**: Azure Container Apps with KEDA event-driven autoscaling (scale-to-zero when queues are idle).
-- **Security & Privacy**: 100% passwordless authentication powered by **Microsoft Entra ID Managed Identities**, with strict regional data residency in UAE North.
+```bash
+cd frontend
+npm install
+cp .env.example .env.local
+npm run dev
+```
 
----
+Open **http://localhost:3000**. The default configuration uses the local Express pipeline. Gemini-powered features require `GEMINI_API_KEY`; other application features can be used without it.
 
-## 🧪 Verification & Status
+To use the Azure backend instead, configure `VITE_API_BASE` and set `VITE_BACKEND_ENABLED=true` in `frontend/.env.local`. Do not commit environment files or credentials.
 
-- **Build**: 0 Warnings, 0 Errors across all 5 solution projects.
-- **Clinical Test Suite**: 132/132 unit and boundary tests passing (Kinematics K1–K8, Aggregators, Resolvers, Rules, and Narrative Guardrails).
-## 🔬 Core Clinical Capabilities
+### Backend validation
 
-- **WHO 2021 Rules Engine**: Deterministic C# clinical logic for Concentration, Motility (PR/NP/IM), Kruger Strict Morphology, and Vitality reference limits.
-- **Dual-Model Computer Vision**: Ensemble architecture using **CBAM-ResNet** and **MADRNet** for morphology consensus and non-sperm debris filtering.
-- **Dual Medical Sign-off**: Hard server-side security gate enforcing that the signing pathologist or doctor is distinct from the data enterer (`SignerId != DataEntererId`).
-- **Guarded AI Narrative**: Generative clinical summaries via **Microsoft Foundry** protected by strict anti-hallucination guardrails and automatic deterministic fallbacks.
-- **Archival Reports**: High-fidelity, tamper-evident PDF/A reports generated through Gotenberg container services.
+```bash
+dotnet restore Penancia.S.sln
+dotnet test Penancia.S.sln
+```
 
----
+See [DEPLOY.md](DEPLOY.md) for Azure deployment and [MAP.md](MAP.md) for the full module map.
 
-## ☁️ Cloud Architecture & Tech Stack
+## Image-derived semen reports
 
-- **API Gateway**: ASP.NET Core 8 Web API with short-lived User Delegation SAS tokens for direct, zero-memory media streaming to Blob Storage.
-- **Orchestration**: Azure Durable Functions isolated worker coordinating the 7-phase clinical sample lifecycle.
-- **Persistence & Audit**: Azure SQL Database (Serverless `GP_S_Gen5_1`, auto-pauses when idle) with immutable event sourcing (`SampleEvents`).
-- **Asynchronous Messaging**: Azure Service Bus with 12 dedicated job queues for parallel computer vision models.
-- **Serverless Containers**: Azure Container Apps with KEDA event-driven autoscaling (scale-to-zero when queues are idle).
-- **Security & Privacy**: 100% passwordless authentication powered by **Microsoft Entra ID Managed Identities**, with strict regional data residency in UAE North.
+Uploaded-image reports are generated from the supplied image at runtime. They are not replaced with generic result bands or fixed clinical outcomes. The current browser pre-screen measures the largest connected foreground structure and clearly marks measurements that the image cannot establish as **Not assessed**.
 
----
+These reports are research pre-screens, not diagnostic semen analysis. Concentration, motility, vitality, detailed morphology, and clinical interpretation require validated laboratory methods and appropriate calibration. Reports include their source filename, SHA-256 fingerprint, analysis timestamp, measurement basis, limitations, and downloadable HTML/PDF presentation.
 
-## 🧪 Verification & Status
+Explicitly labelled demonstration fixtures are separate from uploaded-image analysis. Local runtime report data under `frontend/.panacea-data/` is excluded from version control.
 
-- **Build**: 0 Warnings, 0 Errors across all 5 solution projects.
-- **Clinical Test Suite**: 132/132 unit and boundary tests passing (Kinematics K1–K8, Aggregators, Resolvers, Rules, and Narrative Guardrails).
+## Verification
+
+Run all frontend checks:
+
+```bash
+cd frontend
+npm test
+npm run lint
+npm run build
+```
+
+Run the .NET tests from the repository root:
+
+```bash
+dotnet test Penancia.S.sln
+```
+
+Validation completed on **22 November 2026**:
+
+- **6/6 frontend tests passed**, including image-specific measurements, empty-field handling, safe report downloads, and explicit fixture labelling.
+- TypeScript validation and the Vite production build passed.
+- **171/171 .NET tests passed**.
+
+The .NET suite primarily verifies Domain behavior. Frontend tests focus on image segmentation and report-generation safeguards; they do not establish clinical validation.
+
+## Core architecture highlights
+
+1. **Domain engine** — pure .NET calculations for WHO kinematics, motility, concentration, morphology, vitality, and auditable report hashes.
+2. **API gateway** — versioned endpoints, direct blob-upload SAS generation, release-state access controls, and dual sign-off enforcement.
+3. **Workflow orchestrator** — deterministic Durable Functions orchestration with asynchronous model-job fan-out.
+4. **Cloud infrastructure** — Azure Bicep templates for UAE North and disaster recovery in UAE Central.
+
+## Documentation
+
+- [System atlas and architecture map](MAP.md)
+- [Change log and deployment history](CHANGELOG.md)
+- [Clinical specifications](docs/CLINICAL_WHO2021.md)
+- [Infrastructure](infra/main.bicep)
+- [Deployment guide](DEPLOY.md)
+- [Frontend guide](frontend/README.md)

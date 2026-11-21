@@ -1,0 +1,74 @@
+{
+  "name": "panacea",
+  "like": "neutral",
+  "mode": "both",
+  "settings": [
+    {
+      "thing": "accent",
+      "value": "#7955E8",
+      "source": "dial"
+    },
+    {
+      "thing": "success",
+      "value": "#82B52F",
+      "source": "dial"
+    },
+    {
+      "thing": "warning",
+      "value": "#F5A92F",
+      "source": "dial"
+    },
+    {
+      "thing": "info",
+      "value": "#7955E8",
+      "source": "dial"
+    },
+    {
+      "thing": "neutral",
+      "value": "#71717A",
+      "source": "dial"
+    },
+    {
+      "thing": "--color-background-body",
+      "value": "#FFFFFF",
+      "source": "token",
+      "mode": "light"
+    },
+    {
+      "thing": "--color-background-muted",
+      "value": "#F5F5F7",
+      "source": "token",
+      "mode": "light"
+    },
+    {
+      "thing": "--color-accent-muted",
+      "value": "#F6F3FF",
+      "source": "token",
+      "mode": "light"
+    },
+    {
+      "thing": "--color-border",
+      "value": "#EEEEF2",
+      "source": "token",
+      "mode": "light"
+    },
+    {
+      "thing": "--color-text-secondary",
+      "value": "#64646E",
+      "source": "token",
+      "mode": "light"
+    },
+    {
+      "thing": "corners",
+      "value": "round",
+      "source": "dial"
+    },
+    {
+      "thing": "font",
+      "value": "Inter, -apple-system, BlinkMacSystemFont, sans-serif",
+      "source": "dial"
+    }
+  ],
+  "lifted": [],
+  "palette": "08baebdf000ea932bf6912fd5533ef2dbaf83473b650b4c93018b3a9ed87cfc2"
+}

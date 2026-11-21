@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/staticwebapp.config.json",
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": ["/assets/*", "/*.ico", "/*.png", "/*.jpg", "/*.svg", "/*.bmp"]
+  },
+  "globalHeaders": {
+    "Content-Security-Policy": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https://ca-penancias-api.politebush-2ba657a9.uaenorth.azurecontainerapps.io https://*.core.windows.net https://*.azurecontainerapps.io; worker-src 'self' blob:; img-src 'self' data: blob: https:;",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "strict-origin-when-cross-origin"
+  },
+  "mimeTypes": {
+    ".bmp": "image/bmp",
+    ".json": "application/json"
+  }
+}
