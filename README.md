@@ -1,7 +1,7 @@
 # Penancia.S Semen Analysis Platform
 
 A full-stack reproductive-health application with a bilingual React frontend, local Express services, and an Azure-native .NET backend for auditable semen-analysis workflows. The repository includes the patient experience, image-derived research pre-screen reports, versioned REST APIs, Durable Functions orchestration, infrastructure, and automated tests.
-
+Explanative YT video https://youtu.be/9RTThE5CtZE
 ## Repository layout
 
 - `frontend/` — React 19 + TypeScript patient application and Express development server.
