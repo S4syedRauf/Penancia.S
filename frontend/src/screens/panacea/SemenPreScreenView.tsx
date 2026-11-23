@@ -41,7 +41,7 @@ import { analyzeSpermImage, computeFileSha256, extractFrameFromVideo } from '../
 import type { ImageAnalysisResult } from '../../utils/spermImageAnalyzer';
 import { SemenAnalysisReport } from '../../components/semen/SemenAnalysisReport';
 import { buildSemenReport, downloadSemenReport, printSemenReport } from '../../utils/semenReport';
-import { apiUrl, BACKEND_ENABLED, ENABLE_HEURISTIC_MORPHOLOGY } from '../../config';
+import { apiUrl, BACKEND_ENABLED, ENABLE_HEURISTIC_MORPHOLOGY, DEMO_MODE } from '../../config';
 import { penanciaApi } from '../../services/penanciaApiClient';
 
 interface SemenPreScreenViewProps {
@@ -226,7 +226,10 @@ try {
             annotatedPreviewDataUrl: '',
           };
         } else {
-          // Explicit Golden Fixture Reference Preset
+          // Explicit Golden Fixture Reference Preset — only available in DEMO_MODE
+          if (!DEMO_MODE) {
+            throw new Error('Golden fixture reference presets are only available in DEMO_MODE. Set VITE_DEMO_MODE=true to enable.');
+          }
           const golden = GOLDEN_RESEARCH_CLIPS.find((g) => g.id === selectedGoldenId) || GOLDEN_RESEARCH_CLIPS[0];
           const clip = golden.clips[0];
           // Build a complete ImageAnalysisResult for golden fixtures using clip data + synthetic analysis
@@ -404,6 +407,7 @@ try {
       // Prefer server pipeline results when available (full S0-S13 gate validation)
       const nowIso = new Date().toISOString();
       const isDemo = !uploadedFile;
+      const isDemoMode = isDemo && DEMO_MODE;
       const sampleName = uploadedFile ? uploadedFile.name : `Golden Reference (${selectedGoldenId})`;
 
       const sessionRun: SemenSessionRun = serverSession
@@ -421,8 +425,8 @@ try {
               completeness,
               sampleName,
             },
-            isDemo,
-            demoAttribution: isDemo ? 'Golden Research Reference Fixture' : 'User Micrograph Capture',
+            isDemo: isDemoMode,
+            demoAttribution: isDemoMode ? 'Golden Research Reference Fixture (DEMO)' : 'User Micrograph Capture',
             modelVersion: ENABLE_HEURISTIC_MORPHOLOGY
               ? 'connected-component-image-heuristic-v2.0'
               : 'local-quality-gate-only-v1.0',

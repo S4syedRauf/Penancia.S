@@ -8,7 +8,11 @@ export const BACKEND_ENABLED = import.meta.env?.VITE_BACKEND_ENABLED === 'true';
 export const ENABLE_HEURISTIC_MORPHOLOGY = false;
 
 // ISS-014: demo pipeline quarantine. Default false — production builds never serve fixture-seed results.
-export const DEMO_MODE = import.meta.env?.VITE_DEMO_MODE === 'true';
+// Reads from process.env.DEMO_MODE (Node/server) or import.meta.env.VITE_DEMO_MODE (browser).
+// Server-side enforcement uses process.env.DEMO_MODE; browser display only uses VITE_DEMO_MODE.
+const envDemoMode = (typeof process !== 'undefined' && process.env?.DEMO_MODE === 'true')
+  || import.meta.env?.VITE_DEMO_MODE === 'true';
+export const DEMO_MODE = envDemoMode;
 
 export function apiUrl(path: string): string {
   if (path.startsWith('http://') || path.startsWith('https://')) {
