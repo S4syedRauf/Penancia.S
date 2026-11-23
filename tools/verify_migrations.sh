@@ -36,14 +36,21 @@ run_sqlfile() {
   local db="$1"
   local file="$2"
   
+  # Strip UTF-8 BOM if present so sqlcmd stdin doesn't fail with syntax error
+  local clean_file
+  clean_file=$(mktemp)
+  python3 -c "import sys; content = open(sys.argv[1], 'rb').read().lstrip(b'\xef\xbb\xbf'); open(sys.argv[2], 'wb').write(content)" "$file" "$clean_file"
+
   if [ -n "${CONTAINER_ID:-}" ]; then
-    docker exec -i "$CONTAINER_ID" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C ${db:+-d "$db"} -b < "$file"
+    docker exec -i "$CONTAINER_ID" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C ${db:+-d "$db"} -b < "$clean_file"
   elif command -v sqlcmd >/dev/null 2>&1; then
-    sqlcmd -S "${MSSQL_HOST},${MSSQL_PORT}" -U sa -P "$MSSQL_SA_PASSWORD" -C ${db:+-d "$db"} -i "$file" -b
+    sqlcmd -S "${MSSQL_HOST},${MSSQL_PORT}" -U sa -P "$MSSQL_SA_PASSWORD" -C ${db:+-d "$db"} -i "$clean_file" -b
   else
     echo "ERROR: Neither docker mssql container nor sqlcmd command found." >&2
+    rm -f "$clean_file"
     exit 1
   fi
+  rm -f "$clean_file"
 }
 
 # Find docker container if running
