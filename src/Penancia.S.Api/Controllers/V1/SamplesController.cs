@@ -90,15 +90,35 @@ public class SamplesController : ControllerBase
             });
         }
 
+        double? chamberDepth = null;
+        if (!string.IsNullOrWhiteSpace(request.ChamberTypeId))
+        {
+            if (Penancia.S.Domain.Model.PhysicalCatalogues.TryGetChamber(request.ChamberTypeId, out var chamber))
+            {
+                chamberDepth = chamber.DepthUm;
+            }
+            else
+            {
+                return StatusCode(422, new
+                {
+                    ok = false,
+                    error = "UNKNOWN_CHAMBER_TYPE",
+                    message = $"Chamber type '{request.ChamberTypeId}' is not in the certified physical catalogue."
+                });
+            }
+        }
+
         var sample = new SampleEntity
         {
             SampleId = sampleId,
             CreatedAtUtc = DateTime.UtcNow,
             CreatedBy = callerId,
             State = nameof(SampleState.Draft),
-            MicronsPerPixel = 0,
-            FramesPerSecond = 0,
-            ChamberDepthMicrons = 0,
+            WorkflowMode = !string.IsNullOrWhiteSpace(request.WorkflowMode) ? request.WorkflowMode : "prescreen",
+            ChamberTypeId = request.ChamberTypeId,
+            ChamberDepthMicrons = chamberDepth,
+            MicronsPerPixel = null,
+            FramesPerSecond = null,
             IsDeleted = false
         };
 
@@ -123,7 +143,9 @@ public class SamplesController : ControllerBase
     [Authorize]
     public async Task<IActionResult> GetReport(string sampleId)
     {
-        var sample = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
+        var sample = await _db.Samples
+            .Include(s => s.Calibration)
+            .FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
         if (sample == null)
             return NotFound(new { error = $"Sample {sampleId} not found." });
 
@@ -168,7 +190,9 @@ public class SamplesController : ControllerBase
         [FromQuery] string? fileName = null,
         [FromQuery] string? contentType = null)
     {
-        var sample = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
+        var sample = await _db.Samples
+            .Include(s => s.Calibration)
+            .FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
         if (sample == null)
             return NotFound(new { error = $"Sample {sampleId} not found." });
 
@@ -239,7 +263,9 @@ public class SamplesController : ControllerBase
     [Authorize]
     public async Task<IActionResult> RegisterBlob(string sampleId, [FromBody] RegisterBlobRequest request)
     {
-        var sample = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
+        var sample = await _db.Samples
+            .Include(s => s.Calibration)
+            .FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
         if (sample == null)
             return NotFound(new { error = $"Sample {sampleId} not found." });
 
@@ -284,7 +310,9 @@ public class SamplesController : ControllerBase
     [Authorize] // Allow sample owner or staff to trigger analysis
     public async Task<IActionResult> TriggerAnalysis(string sampleId)
     {
-        var sample = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
+        var sample = await _db.Samples
+            .Include(s => s.Calibration)
+            .FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
         if (sample == null)
             return NotFound(new { error = $"Sample {sampleId} not found." });
 
@@ -304,20 +332,62 @@ public class SamplesController : ControllerBase
             : User.IsInRole("Signer") ? "Signer"
             : User.IsInRole("LabAdmin") ? "LabAdmin" : "Technician";
 
-        // Check for either video OR image blob
-        bool hasMedia = !string.IsNullOrWhiteSpace(sample.RawVideoBlobUri) || !string.IsNullOrWhiteSpace(sample.RawImageBlobUri);
-        bool calibrationPresent = sample.MicronsPerPixel > 0 && sample.FramesPerSecond > 0
-            && sample.ChamberDepthMicrons > 0 && hasMedia;
+        // Readiness strictly reads real stored facts (Step 1.5)
+        var assets = await _db.MediaAssets.Where(a => a.SampleId == sampleId).ToListAsync();
+        var calSnapshot = sample.Calibration != null
+            ? new CalibrationReadinessSnapshot(sample.Calibration.Status, sample.Calibration.ExpiresAtUtc, sample.Calibration.MicronsPerPixel)
+            : null;
+        var assetSnapshots = assets.Select(a => new MediaAssetReadinessSnapshot(a.AssetId, a.Status, a.Kind)).ToList();
+        var sampleSnapshot = new SampleReadinessSnapshot(
+            sample.SampleId,
+            sample.WorkflowMode,
+            sample.ConsentAtUtc,
+            sample.ChamberTypeId,
+            sample.ChamberDepthMicrons,
+            calSnapshot);
+
+        var readiness = SampleReadiness.Check(sampleSnapshot, assetSnapshots);
+        if (!readiness.IsReady)
+        {
+            return StatusCode(422, new
+            {
+                ok = false,
+                error = PrerequisiteReasonCodes.PrerequisitesMissing,
+                missing = readiness.MissingReasons
+            });
+        }
+
+        // Copy MicronsPerPixel from Valid Calibration when readiness is verified (Step 1.5 item 2)
+        if (sample.Calibration != null && sample.Calibration.Status == "Valid" && sample.Calibration.MicronsPerPixel.HasValue)
+        {
+            sample.MicronsPerPixel = sample.Calibration.MicronsPerPixel.Value;
+        }
 
         // Route through the machine: Draft --Submit--> Validating,
         // Validating --FilesValidated--> Analyzing. Any other state is fed
         // Submit so the machine itself returns the INVALID_TRANSITION reason.
         var evt = current == SampleState.Validating ? SampleEvent.FilesValidated : SampleEvent.Submit;
         var ctx = new TransitionContext(actorId, actorRole, Array.Empty<string>(),
-            FilesAndCalibrationPresent: calibrationPresent);
+            FilesAndCalibrationPresent: true);
         var result = SampleStateMachine.Apply(current, evt, ctx);
         if (!result.Success)
             return StatusCode(409, new { error = result.FailureReason });
+
+        // Apply state transition
+        sample.State = result.NewState.ToString();
+        await _db.SaveChangesAsync();
+
+        if (_httpClients == null)
+        {
+            return Ok(new
+            {
+                ok = true,
+                sampleId = sampleId,
+                status = result.NewState.ToString(),
+                state = result.NewState.ToString(),
+                message = "Semen pre-screening pipeline triggered successfully."
+            });
+        }
 
         var workflow = _httpClients.CreateClient("workflow");
         var functionKey = _configuration["Workflow:FunctionKey"];
@@ -355,5 +425,7 @@ public record CreateSampleRequest(
     string? SampleName = null,
     double? MicronsPerPixel = null,
     string? MediaType = null,
-    object? Metadata = null
+    object? Metadata = null,
+    string? ChamberTypeId = null,
+    string? WorkflowMode = null
 );

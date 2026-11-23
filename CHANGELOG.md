@@ -559,6 +559,55 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0016 — Step 1.5: Fill Sample Facts from Stored Truth Sources (ISS-002)
+
+- **Date (UTC):** 2026-11-23T20:45:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 1 / Step 1.5
+- **Issue IDs:** ISS-002, ISS-003
+- **Type:** Added & Changed & Correction
+- **Summary:**
+  1. **Correction:** CL-0015 recorded its commit SHA as pending; the commit on `phase-1/data-foundation` is `cbfda3ef2def2ffd24652d32676eb35f4d1630b8` (`2026-11-23T20:37:34Z`).
+  2. **Stored Truth Readiness Checker (`src/Penancia.S.Domain/Workflow/SampleReadiness.cs`):** Created `SampleReadiness.Check` and registry of reason codes `PrerequisiteReasonCodes` (`PREREQUISITES_MISSING`, `MISSING_CONSENT`, `MISSING_CALIBRATION`, `CALIBRATION_NOT_VALID`, `CALIBRATION_EXPIRED`, `MISSING_MEDIA`, `MEDIA_NOT_UPLOADED_OR_VERIFIED`, `MISSING_CHAMBER`). A sample can become ready only through real stored facts: valid unexpired calibration, verified or uploaded media asset, consent timestamp, and chamber depth specification for clinical mode.
+  3. **CreateSample Unmeasured Numbers (`src/Penancia.S.Api/Controllers/V1/SamplesController.cs`):**
+     - Stop writing `0` for unmeasured numbers: `MicronsPerPixel` and `FramesPerSecond` left `null`.
+     - `ChamberDepthMicrons` is populated strictly from `PhysicalCatalogues.TryGetChamber(ChamberTypeId)` and unknown chamber types are rejected with 422 (`UNKNOWN_CHAMBER_TYPE`).
+     - `WorkflowMode` defaults to `"prescreen"` if not provided.
+  4. **Readiness Gate on Analysis & Workflow Activities (`SamplesController.cs`, `ValidateFilesActivity.cs`):**
+     - Replaced legacy readiness condition (`MicronsPerPixel > 0 && FramesPerSecond > 0 && ChamberDepthMicrons > 0 && hasMedia`) with `SampleReadiness.Check`.
+     - When prerequisites are missing, `TriggerAnalysis` returns 422 with `PREREQUISITES_MISSING` and the exact list of missing reasons.
+     - When readiness passes with a Valid calibration, `MicronsPerPixel` is copied from the valid `Calibration.MicronsPerPixel` record to the sample.
+     - `ValidateFilesActivity` enforces `SampleReadiness.Check` and copies `MicronsPerPixel` upon verification.
+  5. **Comprehensive Unit and Integration Tests (`tests/Penancia.S.Tests/SampleReadinessTests.cs`):**
+     - Unit test for every missing prerequisite reason code: `MISSING_CONSENT`, `MISSING_CALIBRATION`, `CALIBRATION_NOT_VALID`, `CALIBRATION_EXPIRED`, `MISSING_MEDIA`, `MEDIA_NOT_UPLOADED_OR_VERIFIED` (for `Issued`, `Rejected`, `Cleared`), `MISSING_CHAMBER`.
+     - Unit tests verifying `CreateSample` writes `null` for unmeasured numbers, sets `ChamberDepthMicrons` from catalogue, and rejects unknown chamber IDs with 422.
+     - Integration test verifying `TriggerAnalysis` returns 422 with `PREREQUISITES_MISSING` and missing reasons.
+     - Integration test verifying `TriggerAnalysis` passes when all prerequisites are met and copies `MicronsPerPixel`.
+     - Unit test verifying `ValidateFilesActivity` validates stored truth and copies `MicronsPerPixel`.
+- **Why:** Resolve ISS-002: eliminate invented sample defaults, enforce that samples can become ready only through real stored facts, and provide granular prerequisite reason codes.
+- **Files changed:**
+  - `src/Penancia.S.Domain/Workflow/SampleReadiness.cs` — readiness checker and reason codes
+  - `src/Penancia.S.Api/Controllers/V1/SamplesController.cs` — null unmeasured values in CreateSample, catalogue chamber depth lookup, readiness gate on TriggerAnalysis, and calibration scale copying
+  - `src/Penancia.S.Workflow/Activities/ValidateFilesActivity.cs` — readiness gate and calibration scale copying
+  - `tests/Penancia.S.Tests/SampleReadinessTests.cs` — unit and integration tests for reason codes and readiness lifecycle
+  - `tests/Penancia.S.Tests/Penancia.S.Tests.csproj` — added workflow project reference
+  - `CHANGELOG.md` — added CL-0016
+- **Behaviour before → after:** `CreateSample` writes null instead of 0 for unmeasured fields; chamber depth is set from manufacturer-backed catalogues; samples can only be submitted or validated when valid calibration, media asset, and consent exist in the database; missing prerequisites return structured reason codes.
+- **Contract / schema / API changes:** `CreateSampleRequest` supports `ChamberTypeId` and `WorkflowMode`; `TriggerAnalysis` returns 422 with `missing` reasons array when prerequisites are missing.
+- **Database migration:** none (schema established in Step 1.1)
+- **Config / env / infra changes:** none
+- **Tests run:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 208 passed, 0 failed
+  - `pytest models/calibration/test_calibration.py -v` → 6 passed in 1.06s
+  - `cd frontend && bun test && bun run lint && bun run build` → 27 tests passed, lint clean, build succeeded
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed (exit 0)
+- **Known gaps / risks:** `FramesPerSecond` extraction is deferred to `ffprobe` in Step 3.1/4.3; remains null until video QC lands.
+- **Rollback:** Revert commit on `phase-1/data-foundation`.
+- **Follow-ups for the next developer or model:** Phase 1 complete. Proceed to Phase 2 (Upload, scanner, and demo quarantine).
+- **Commit(s):** pending for this CL-0016 entry
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did
