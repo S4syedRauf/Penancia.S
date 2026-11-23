@@ -107,7 +107,7 @@ jobs:
 
       - name: Run SQL Server Integration Tests
         env:
-          TEST_SQLSERVER_CONNECTION_STRING: "Server=127.0.0.1,1433;Database=PenanciaDb;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True"
+          TEST_SQLSERVER_CONNECTION_STRING: "Server=127.0.0.1,1433;Database=db_fresh;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True"
         run: dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release --filter Category=SqlServer --verbosity normal
 
   # ============================================================
