@@ -101,7 +101,7 @@ jobs:
     needs: [build_test_backend, build_test_frontend]
     runs-on: ubuntu-latest
     name: Build & Push Docker Images
-    if: github.event_name == 'push' && secrets.AZURE_CREDENTIALS != '' && secrets.ACR_USERNAME != '' && secrets.ACR_PASSWORD != ''
+    if: github.event_name == 'push' && ${{ secrets.AZURE_CREDENTIALS != '' && secrets.ACR_USERNAME != '' && secrets.ACR_PASSWORD != '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -164,7 +164,7 @@ jobs:
     needs: build_push_images
     runs-on: ubuntu-latest
     name: Deploy Infrastructure (Bicep)
-    if: github.event_name == 'push' && secrets.AZURE_CREDENTIALS != '' && secrets.ENTRA_WEB_CLIENT_ID != ''
+    if: github.event_name == 'push' && ${{ secrets.AZURE_CREDENTIALS != '' && secrets.ENTRA_WEB_CLIENT_ID != '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -208,7 +208,7 @@ jobs:
     needs: build_test_frontend
     runs-on: ubuntu-latest
     name: Deploy Frontend to Azure Static Web Apps
-    if: github.event_name == 'push' && secrets.AZURE_STATIC_WEB_APPS_API_TOKEN != ''
+    if: github.event_name == 'push' && ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN != '' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -260,7 +260,7 @@ jobs:
     needs: [deploy_infrastructure, deploy_frontend]
     runs-on: ubuntu-latest
     name: Verify Deployment
-    if: github.event_name == 'push' && secrets.AZURE_CREDENTIALS != ''
+    if: github.event_name == 'push' && ${{ secrets.AZURE_CREDENTIALS != '' }}
     steps:
       - name: Azure Login
         uses: azure/login@v2
