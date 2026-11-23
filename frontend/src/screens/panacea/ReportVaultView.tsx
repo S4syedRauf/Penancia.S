@@ -27,7 +27,7 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import { VStack } from '@astryxdesign/core/VStack';
 import { usePanacea } from '../../store/PanaceaContext';
 import type { PrivacyMode, ReportValueRow, VaultReport } from '../../types/panacea';
-import { extractReportLocally } from '../../utils/reportExtractor';
+import { penanciaApi } from '../../services/penanciaApiClient';
 
 interface ReportVaultViewProps {
   onBack: () => void;
@@ -47,10 +47,8 @@ export const ReportVaultView: React.FC<ReportVaultViewProps> = ({ onBack }) => {
   const {
     state,
     language,
-    refreshState,
     toggleConsent,
     addReport,
-    confirmReportInState,
     deleteReportFromState,
   } = usePanacea();
   const isAr = language === 'ar';
@@ -128,8 +126,7 @@ export const ReportVaultView: React.FC<ReportVaultViewProps> = ({ onBack }) => {
       const rawText = opts?.emptyText ? '' : rawTextInput;
       const mime = imagePreview ? 'image/jpeg' : 'application/pdf';
 
-      // 1. Run local quarantine check and extraction
-      const extracted = extractReportLocally({
+      const { report } = await penanciaApi.extractReport({
         fileName,
         mime,
         rawText,
@@ -138,21 +135,9 @@ export const ReportVaultView: React.FC<ReportVaultViewProps> = ({ onBack }) => {
         simulateMalware: Boolean(opts?.simulateMalware),
       });
 
-      if (!extracted.ok) {
-        setErrorMsg(
-          isAr
-            ? 'تم رفض الملف في فحص العزل الأمني.'
-            : extracted.rejectedReason || 'File rejected in quarantine scan.'
-        );
-        return;
-      }
-
-      if (extracted.report) {
-        addReport(extracted.report);
-        openReview(extracted.report);
-      }
+      addReport(report);
+      openReview(report);
     } catch (err: any) {
-      console.error('Extraction error:', err);
       setErrorMsg(
         err?.message || (isAr ? 'حدث خطأ أثناء معالجة التقرير.' : 'Error occurred during report extraction.')
       );
@@ -164,19 +149,33 @@ export const ReportVaultView: React.FC<ReportVaultViewProps> = ({ onBack }) => {
   const confirmReport = async () => {
     if (!reviewingReport) return;
     setSavingConfirm(true);
+    setErrorMsg(null);
     try {
       const labName =
         reviewingReport.summary?.lab_name_as_written || 'Dubai Uploaded Lab Fixture';
-      confirmReportInState(reviewingReport.docId, editedRows, editReportDate, labName);
+      const { report } = await penanciaApi.confirmReport(reviewingReport.docId, {
+        values: editedRows,
+        reportDate: editReportDate,
+        labName,
+      });
+      addReport(report);
       setReviewingReport(null);
+    } catch (err: any) {
+      setErrorMsg(err?.message || (isAr ? 'تعذر تأكيد التقرير.' : 'Could not confirm the report.'));
     } finally {
       setSavingConfirm(false);
     }
   };
 
   const deleteReport = async (docId: string) => {
-    deleteReportFromState(docId);
-    if (reviewingReport?.docId === docId) setReviewingReport(null);
+    setErrorMsg(null);
+    try {
+      await penanciaApi.deleteReport(docId);
+      deleteReportFromState(docId);
+      if (reviewingReport?.docId === docId) setReviewingReport(null);
+    } catch (err: any) {
+      setErrorMsg(err?.message || (isAr ? 'تعذر حذف التقرير.' : 'Could not delete the report.'));
+    }
   };
 
   return (

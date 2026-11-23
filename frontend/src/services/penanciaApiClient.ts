@@ -1,4 +1,5 @@
 import { apiUrl } from '../config';
+import type { PrivacyMode, ReportValueRow, SemenSessionRun, VaultReport } from '../types/panacea';
 
 export interface SasUploadResponse {
   sasUrl: string;
@@ -27,6 +28,58 @@ export interface TriggerAnalysisResponse {
   sampleId: string;
   status: string;
   trackingId: string;
+}
+
+export interface ExtractReportRequest {
+  fileName: string;
+  mime: string;
+  rawText?: string;
+  imageBase64?: string;
+  privacyMode: PrivacyMode;
+  reportTypeHint?: string;
+  simulateMalware?: boolean;
+}
+
+export interface ConfirmReportRequest {
+  values: ReportValueRow[];
+  reportDate: string;
+  labName?: string;
+  abstinenceDays?: number;
+}
+
+interface ReportResponse {
+  report: VaultReport;
+  reports: VaultReport[];
+}
+
+async function readJsonResponse<T>(resp: Response, fallbackMessage: string): Promise<T> {
+  const responseText = await resp.text();
+  let data: any = {};
+  if (responseText) {
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      data = { message: responseText };
+    }
+  }
+  if (!resp.ok) {
+    throw new Error(data.message_en || data.message || `${fallbackMessage} (${resp.status})`);
+  }
+  return data as T;
+}
+
+export async function postApiJson<T>(
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
+  const resp = await fetch(apiUrl(path), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    credentials: 'include',
+    body: JSON.stringify(body),
+  });
+  return readJsonResponse<T>(resp, 'The backend request failed');
 }
 
 export const penanciaApi = {
@@ -143,5 +196,48 @@ export const penanciaApi = {
       throw new Error(`Failed to get report: ${resp.status} - ${errorText}`);
     }
     return resp.json();
+  },
+
+  async extractReport(request: ExtractReportRequest): Promise<ReportResponse> {
+    const resp = await fetch(apiUrl('/v1/reports/extract'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(request),
+    });
+    return readJsonResponse<ReportResponse>(resp, 'Failed to extract report');
+  },
+
+  async confirmReport(docId: string, request: ConfirmReportRequest): Promise<ReportResponse> {
+    const resp = await fetch(apiUrl(`/v1/reports/${encodeURIComponent(docId)}/confirm`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(request),
+    });
+    return readJsonResponse<ReportResponse>(resp, 'Failed to confirm report');
+  },
+
+  async deleteReport(docId: string): Promise<{ reports: VaultReport[] }> {
+    const resp = await fetch(apiUrl(`/v1/reports/${encodeURIComponent(docId)}`), {
+      method: 'DELETE',
+      credentials: 'include',
+    });
+    return readJsonResponse<{ reports: VaultReport[] }>(resp, 'Failed to delete report');
+  },
+
+  async saveSemenSession(
+    session: SemenSessionRun,
+  ): Promise<{ session: SemenSessionRun; semenSessions: SemenSessionRun[] }> {
+    const resp = await fetch(apiUrl('/v1/semen/sessions'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify(session),
+    });
+    return readJsonResponse<{ session: SemenSessionRun; semenSessions: SemenSessionRun[] }>(
+      resp,
+      'Failed to save image analysis',
+    );
   },
 };

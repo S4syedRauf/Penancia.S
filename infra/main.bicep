@@ -23,6 +23,29 @@ param apiImageTag string = 'latest'
 @description('Gotenberg container image. Verify the tag is a current stable release at deploy time.')
 param gotenbergImage string = 'gotenberg/gotenberg:8'
 
+@description('Immutable web image tag in the penancias-web ACR repository.')
+param webImageTag string = 'latest'
+
+@description('Immutable workflow image tag in the penancias-workflow ACR repository.')
+param workflowImageTag string = 'latest'
+
+@description('Entra application (client) ID used by the public web Easy Auth registration.')
+param entraWebClientId string
+
+@description('Entra application (client) ID used as the protected API audience.')
+param entraApiClientId string
+
+@description('Entra tenant allowed to use the clinical application.')
+param entraTenantId string = tenant().tenantId
+
+@secure()
+@description('Confidential web client secret for Container Apps Easy Auth.')
+param entraWebClientSecret string
+
+@secure()
+@description('Native Functions host/function key. Leave empty only for the first workflow bootstrap deployment, then set it before enabling analysis.')
+param workflowFunctionKey string = ''
+
 // ---------------------------------------------------------------------------
 // Shared tag block applied to every resource for cost management and policy.
 // ---------------------------------------------------------------------------
@@ -108,6 +131,20 @@ resource mediaContainers 'Microsoft.Storage/storageAccounts/blobServices/contain
     publicAccess: 'None'
   }
 }]
+
+resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
+  parent: mediaStorage
+  name: 'default'
+}
+
+resource clinicalStateShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
+  parent: fileService
+  name: 'clinical-state'
+  properties: {
+    shareQuota: 100
+    enabledProtocols: 'SMB'
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 4. Storage Account 2: Durable Functions Internal State
@@ -201,6 +238,15 @@ resource containerAppEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
         sharedKey: logWorkspace.listKeys().primarySharedKey
       }
     }
+    storages: [
+      {
+        name: 'clinical-state'
+        storageType: 'AzureFile'
+        accountName: mediaStorage.name
+        shareName: clinicalStateShare.name
+        accessMode: 'ReadWrite'
+      }
+    ]
   }
 }
 
@@ -320,6 +366,22 @@ resource kvSecretAppInsights 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   }
 }
 
+resource kvSecretWorkflowKey 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: 'workflow-function-key'
+  properties: {
+    value: empty(workflowFunctionKey) ? 'PENDING-WORKFLOW-BOOTSTRAP' : workflowFunctionKey
+  }
+}
+
+resource kvSecretWebClient 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  parent: keyVault
+  name: 'entra-web-client-secret'
+  properties: {
+    value: entraWebClientSecret
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 11. Api Container App — Penancia.S.Api (ASP.NET Core, port 8080)
 //     Image is built from the repo-root Dockerfile and pushed to ACR first.
@@ -331,7 +393,7 @@ resource kvSecretAppInsights 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
 //     Non-secret values are derived from the deployed resources, not literals.
 // ---------------------------------------------------------------------------
 resource apiContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
-  name: 'ca-${prefix}-api'
+  name: 'penancias-api'
   location: location
   tags: commonTags
   identity: {
@@ -344,7 +406,7 @@ resource apiContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
     managedEnvironmentId: containerAppEnv.id
     configuration: {
       ingress: {
-        external: true
+        external: false
         targetPort: 8080
         transport: 'http'
       }
@@ -363,6 +425,11 @@ resource apiContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
         {
           name: 'app-insights-connection-string'
           keyVaultUrl: '${keyVault.properties.vaultUri}secrets/app-insights-connection-string'
+          identity: appIdentity.id
+        }
+        {
+          name: 'workflow-function-key'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/workflow-function-key'
           identity: appIdentity.id
         }
       ]
@@ -395,15 +462,15 @@ resource apiContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
             }
             {
               name: 'AzureAd__TenantId'
-              value: tenant().tenantId
+              value: entraTenantId
             }
             {
               name: 'AzureAd__ClientId'
-              value: appIdentity.properties.clientId
+              value: entraApiClientId
             }
             {
               name: 'AzureAd__Audience'
-              value: 'api://${appIdentity.properties.clientId}'
+              value: 'api://${entraApiClientId}'
             }
             {
               name: 'Azure__StorageAccount'
@@ -424,6 +491,14 @@ resource apiContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'ApplicationInsights__ConnectionString'
               secretRef: 'app-insights-connection-string'
+            }
+            {
+              name: 'Workflow__BaseUrl'
+              value: 'http://penancias-workflow'
+            }
+            {
+              name: 'Workflow__FunctionKey'
+              secretRef: 'workflow-function-key'
             }
           ]
           probes: [
@@ -453,7 +528,7 @@ resource apiContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
 //     is implemented).
 // ---------------------------------------------------------------------------
 resource gotenbergContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
-  name: 'ca-${prefix}-gotenberg'
+  name: 'penancias-pdf'
   location: location
   tags: commonTags
   properties: {
@@ -484,36 +559,14 @@ resource gotenbergContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
   }
 }
 
-// ---------------------------------------------------------------------------
-// 13. Workflow Function App — Penancia.S.Workflow (Durable Functions,
-//     C# isolated worker, .NET 8, Consumption plan). App settings cover EVERY
-//     key the Workflow reads:
-//       Program.cs: SqlConnectionString,
-//       ServiceBusConnection__fullyQualifiedNamespace.
-//       local.settings.json: AzureWebJobsStorage, FUNCTIONS_WORKER_RUNTIME,
-//       APPLICATIONINSIGHTS_CONNECTION_STRING.
-//     GotenbergUrl is provisioned for the future RenderPdfReportActivity
-//     wiring (see section 12); the code does not read it yet.
-// ---------------------------------------------------------------------------
-resource functionPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
-  name: 'asp-${prefix}-workflow'
+// 13. Workflow — native Azure Functions on Azure Container Apps.
+// Function keys are stored by the host in functionStorage's private
+// azure-webjob-secrets container; retrieve them after the first deployment.
+resource workflowFunctionApp 'Microsoft.App/containerApps@2024-03-01' = {
+  name: 'penancias-workflow'
   location: location
   tags: commonTags
-  sku: {
-    name: 'Y1'
-    tier: 'Dynamic'
-  }
   kind: 'functionapp'
-  properties: {
-    reserved: true
-  }
-}
-
-resource workflowFunctionApp 'Microsoft.Web/sites@2023-12-01' = {
-  name: 'func-${prefix}-workflow'
-  location: location
-  tags: commonTags
-  kind: 'functionapp,linux'
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {
@@ -521,44 +574,184 @@ resource workflowFunctionApp 'Microsoft.Web/sites@2023-12-01' = {
     }
   }
   properties: {
-    serverFarmId: functionPlan.id
-    httpsOnly: true
-    keyVaultReferenceIdentity: appIdentity.id
-    siteConfig: {
-      linuxFxVersion: 'DOTNET-ISOLATED|8.0'
-      netFrameworkVersion: 'v8.0'
-      ftpsState: 'Disabled'
-      minTlsVersion: '1.2'
-      appSettings: [
+    managedEnvironmentId: containerAppEnv.id
+    configuration: {
+      ingress: {
+        external: false
+        targetPort: 80
+        transport: 'http'
+      }
+      registries: [
         {
-          name: 'AzureWebJobsStorage'
-          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=function-storage-connection-string)'
-        }
-        {
-          name: 'FUNCTIONS_WORKER_RUNTIME'
-          value: 'dotnet-isolated'
-        }
-        {
-          name: 'FUNCTIONS_EXTENSION_VERSION'
-          value: '~4'
-        }
-        {
-          name: 'SqlConnectionString'
-          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=sql-connection-string)'
-        }
-        {
-          name: 'ServiceBusConnection__fullyQualifiedNamespace'
-          value: '${serviceBusNamespace.name}.servicebus.windows.net'
-        }
-        {
-          name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-          value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=app-insights-connection-string)'
-        }
-        {
-          name: 'GotenbergUrl'
-          value: 'https://${gotenbergContainerApp.properties.configuration.ingress.fqdn}'
+          server: acr.properties.loginServer
+          identity: appIdentity.id
         }
       ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'workflow'
+          image: '${acr.properties.loginServer}/penancias-workflow:${workflowImageTag}'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: [
+            {
+              name: 'AzureWebJobsStorage'
+              value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=function-storage-connection-string)'
+            }
+            {
+              name: 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING'
+              value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=function-storage-connection-string)'
+            }
+            {
+              name: 'WEBSITE_CONTENTSHARE'
+              value: 'penancias-workflow-content'
+            }
+            {
+              name: 'FUNCTIONS_WORKER_RUNTIME'
+              value: 'dotnet-isolated'
+            }
+            {
+              name: 'FUNCTIONS_EXTENSION_VERSION'
+              value: '~4'
+            }
+            {
+              name: 'SqlConnectionString'
+              value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=sql-connection-string)'
+            }
+            {
+              name: 'Azure__ManagedIdentityClientId'
+              value: appIdentity.properties.clientId
+            }
+            {
+              name: 'ServiceBusConnection__fullyQualifiedNamespace'
+              value: '${serviceBusNamespace.name}.servicebus.windows.net'
+            }
+            {
+              name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
+              value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=app-insights-connection-string)'
+            }
+            {
+              name: 'GotenbergUrl'
+              value: 'http://penancias-pdf'
+            }
+          ]
+        }
+      ]
+      scale: {
+        minReplicas: 0
+        maxReplicas: 2
+      }
+    }
+  }
+}
+
+// Public ingress is only on the web application. Easy Auth is configured in
+// web-auth.bicep after this resource so the callback URL is known.
+resource webContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
+  name: 'penancias-web'
+  location: location
+  tags: commonTags
+  properties: {
+    managedEnvironmentId: containerAppEnv.id
+    configuration: {
+      ingress: {
+        external: true
+        targetPort: 3000
+        transport: 'http'
+      }
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: appIdentity.id
+        }
+      ]
+      secrets: [
+        {
+          name: 'entra-web-client-secret'
+          keyVaultUrl: '${keyVault.properties.vaultUri}secrets/entra-web-client-secret'
+          identity: appIdentity.id
+        }
+      ]
+    }
+    template: {
+      containers: [
+        {
+          name: 'web'
+          image: '${acr.properties.loginServer}/penancias-web:${webImageTag}'
+          resources: {
+            cpu: json('0.5')
+            memory: '1Gi'
+          }
+          env: [
+            {
+              name: 'NODE_ENV'
+              value: 'production'
+            }
+            {
+              name: 'PENANCIA_API_URL'
+              value: 'http://penancias-api'
+            }
+            {
+              name: 'AUTH_PRODUCTION'
+              value: 'true'
+            }
+            {
+              name: 'REQUIRE_VERIFIED_JWT'
+              value: 'true'
+            }
+            {
+              name: 'AUTH_USE_CONTAINER_APPS_OBO'
+              value: 'true'
+            }
+            {
+              name: 'ENTRA_TENANT_ID'
+              value: entraTenantId
+            }
+            {
+              name: 'ENTRA_CLIENT_ID'
+              value: entraWebClientId
+            }
+            {
+              name: 'ENTRA_CLIENT_SECRET'
+              secretRef: 'entra-web-client-secret'
+            }
+            {
+              name: 'ENTRA_API_SCOPE'
+              value: 'api://${entraApiClientId}/access_as_user'
+            }
+          ]
+          volumeMounts: [
+            {
+              volumeName: 'clinical-state'
+              mountPath: '/var/lib/penancia'
+            }
+          ]
+          probes: [
+            {
+              type: 'Liveness'
+              httpGet: {
+                path: '/health'
+                port: 3000
+              }
+            }
+          ]
+        }
+      ]
+      volumes: [
+        {
+          name: 'clinical-state'
+          storageType: 'AzureFile'
+          storageName: 'clinical-state'
+        }
+      ]
+      scale: {
+        minReplicas: 1
+        maxReplicas: 3
+      }
     }
   }
 }
@@ -647,5 +840,9 @@ output keyVaultUri string = keyVault.properties.vaultUri
 output apiContainerAppName string = apiContainerApp.name
 output apiContainerAppFqdn string = apiContainerApp.properties.configuration.ingress.fqdn
 output workflowFunctionAppName string = workflowFunctionApp.name
+output workflowContainerAppFqdn string = workflowFunctionApp.properties.configuration.ingress.fqdn
+output webContainerAppName string = webContainerApp.name
+output webContainerAppFqdn string = webContainerApp.properties.configuration.ingress.fqdn
+output entraWebClientId string = entraWebClientId
 output gotenbergContainerAppName string = gotenbergContainerApp.name
 output gotenbergFqdn string = gotenbergContainerApp.properties.configuration.ingress.fqdn

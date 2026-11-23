@@ -47,7 +47,7 @@ export interface PanaceaAppState {
   featureFlags: FeatureFlags;
 }
 
-const CACHE_KEY = 'panacea_offline_state_v2';
+const LEGACY_CACHE_KEY = 'panacea_offline_state_v2';
 
 export const DEFAULT_PANACEA_STATE: PanaceaAppState = {
   user: {
@@ -148,24 +148,13 @@ interface PanaceaContextValue {
 const PanaceaContext = createContext<PanaceaContextValue | null>(null);
 
 export const PanaceaProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [state, setState] = useState<PanaceaAppState>(() => {
-    try {
-      const cached = localStorage.getItem(CACHE_KEY);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        return {
-          ...DEFAULT_PANACEA_STATE,
-          ...parsed,
-          consents: { ...DEFAULT_PANACEA_STATE.consents, ...(parsed.consents || {}) },
-          featureFlags: { ...DEFAULT_PANACEA_STATE.featureFlags, ...(parsed.featureFlags || {}) },
-        };
-      }
-    } catch {
-      // ignore
-    }
-    return DEFAULT_PANACEA_STATE;
-  });
-  const [loading, setLoading] = useState(!state);
+  // Clinical state is hydrated only from the authenticated server. Shared
+  // browser caches are deliberately removed rather than reused across users.
+  const [state, setState] = useState<PanaceaAppState>(DEFAULT_PANACEA_STATE);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    localStorage.removeItem(LEGACY_CACHE_KEY);
+  }, []);
   const [offline, setOffline] = useState(typeof navigator !== 'undefined' ? !navigator.onLine : false);
   const [activeTab, setActiveTab] = useState<PrimaryTab>('diary');
   const [subView, setSubView] = useState<SubView>(null);
@@ -184,11 +173,6 @@ export const PanaceaProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const persistCache = (next: PanaceaAppState) => {
     setState(next);
-    try {
-      localStorage.setItem(CACHE_KEY, JSON.stringify(next));
-    } catch {
-      // ignore storage quota
-    }
   };
 
   const addSemenSession = useCallback((session: SemenSessionRun) => {
@@ -198,11 +182,6 @@ export const PanaceaProvider: React.FC<{ children: React.ReactNode }> = ({ child
         ...current,
         semenSessions: [session, ...(current.semenSessions || []).slice(0, 19)],
       };
-      try {
-        localStorage.setItem(CACHE_KEY, JSON.stringify(next));
-      } catch {
-        // ignore
-      }
       return next;
     });
   }, []);

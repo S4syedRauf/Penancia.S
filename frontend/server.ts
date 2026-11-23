@@ -37,34 +37,44 @@ import {
   runSemenPipelineS0ToS13,
   SEMEN_GATE_CONFIG,
 } from './src/server/pipelineEngine.ts';
-import type { ConsentKey, PlanActionStatus, QuestionnaireResponseRow, VaultReport } from './src/types/panacea.ts';
+import { recordImageDerivedSemenSession } from './src/server/semenSessionStore.ts';
+import { requireAuthentication } from './src/server/auth.ts';
+import type { ConsentKey, PlanActionStatus, QuestionnaireResponseRow, SemenSessionRun, VaultReport } from './src/types/panacea.ts';
 
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '15mb' }));
+  app.disable('x-powered-by');
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+    next();
+  });
 
-  // Health & Version Info
+  // Public operational health only; no patient state or feature configuration.
   app.get('/v1/health', (_req, res) => {
-    const store = loadStore();
     res.json({
       status: 'ok',
-      service: 'panacea-api',
-      attribution: 'Developed with love by Syed',
-      region: 'dubai-first-prototype',
+      service: 'panacea-web',
       versions: {
         questionnaire: 'panacea-v2.0-26q-adaptive',
         screeningRules: 'panacea-rules-v2.0',
         semenPipeline: 'panacea-pipe-v2.0',
         summarySchema: 1,
       },
-      featureFlags: store.featureFlags,
     });
   });
+
+  // Container Apps Easy Auth overwrites these headers at the trusted ingress.
+  // Every frontend and /v1 data route below requires a verified Entra identity.
+  app.use(requireAuthentication);
+  app.use(express.json({ limit: '15mb' }));
 
   // Full App State Sync
   app.get('/v1/state', (_req, res) => {
@@ -664,6 +674,39 @@ async function startServer() {
     });
   });
 
+  app.post('/v1/semen/sessions', (req, res) => {
+    const store = loadStore();
+    try {
+      const session = recordImageDerivedSemenSession(store, req.body as SemenSessionRun);
+      appendAuditAndOutbox(store, {
+        actorType: 'pipeline',
+        action: 'SEMEN_IMAGE_SESSION_SAVED',
+        target: session.sessionId,
+      });
+      saveStore(store);
+      res.status(201).json({ session, semenSessions: store.semenSessions });
+    } catch (err) {
+      const code = err instanceof Error ? err.message : 'INVALID_IMAGE_SESSION';
+      const status = code === 'CONSENT_REQUIRED' ? 403 : code === 'KILL_SWITCH_ACTIVE' ? 409 : 400;
+      res.status(status).json({
+        code,
+        message_en:
+          code === 'CONSENT_REQUIRED'
+            ? 'Semen media consent is required before saving this analysis.'
+            : code === 'KILL_SWITCH_ACTIVE'
+              ? 'The research kill switch is active. This analysis was not saved.'
+              : 'The image-derived research session is invalid and was not saved.',
+        message_ar:
+          code === 'CONSENT_REQUIRED'
+            ? 'يجب تفعيل إذن معالجة الوسائط قبل حفظ هذا التحليل.'
+            : code === 'KILL_SWITCH_ACTIVE'
+              ? 'مفتاح إيقاف البحث مفعّل. لم يتم حفظ هذا التحليل.'
+              : 'جلسة تحليل الصورة غير صالحة ولم يتم حفظها.',
+        retry: false,
+      });
+    }
+  });
+
   app.post('/v1/semen/analyze', (req, res) => {
     const store = loadStore();
     try {
@@ -903,7 +946,7 @@ async function startServer() {
   } else {
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
+    app.get(/.*/, (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

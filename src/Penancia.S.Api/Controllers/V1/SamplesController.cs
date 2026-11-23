@@ -38,13 +38,26 @@ public class SamplesController : ControllerBase
     private readonly PenanciaDbContext _db;
     private readonly BlobServiceClient _blobs;
     private readonly ILogger<SamplesController> _logger;
+    private readonly IHttpClientFactory _httpClients;
+    private readonly IConfiguration _configuration;
 
-    public SamplesController(PenanciaDbContext db, BlobServiceClient blobs, ILogger<SamplesController> logger)
+    public SamplesController(
+        PenanciaDbContext db,
+        BlobServiceClient blobs,
+        IHttpClientFactory httpClients,
+        IConfiguration configuration,
+        ILogger<SamplesController> logger)
     {
         _db = db;
         _blobs = blobs;
+        _httpClients = httpClients;
+        _configuration = configuration;
         _logger = logger;
     }
+
+    private string CallerObjectId() => User.FindFirst("oid")?.Value
+        ?? User.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
+        ?? throw new InvalidOperationException("The verified Entra object ID claim is missing.");
 
     private bool IsStaffCaller() => User.IsInRole("Technician") || User.IsInRole("Signer")
         || User.IsInRole("ClinicalDirector") || User.IsInRole("LabAdmin");
@@ -56,9 +69,10 @@ public class SamplesController : ControllerBase
     /// Creates a new sample record. Used by mobile, portal, and prescreen callers.
     /// </summary>
     [HttpPost]
-    [AllowAnonymous]
+    [Authorize]
     public async Task<IActionResult> CreateSample([FromBody] CreateSampleRequest request)
     {
+        var callerId = CallerObjectId();
         var sampleId = string.IsNullOrWhiteSpace(request.SampleId)
             ? $"SMP-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid():N}"[..24]
             : request.SampleId;
@@ -66,6 +80,7 @@ public class SamplesController : ControllerBase
         var existing = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
         if (existing != null)
         {
+            if (existing.CreatedBy != callerId && !IsStaffCaller()) return Forbid();
             return Ok(new
             {
                 sampleId = existing.SampleId,
@@ -79,11 +94,11 @@ public class SamplesController : ControllerBase
         {
             SampleId = sampleId,
             CreatedAtUtc = DateTime.UtcNow,
-            CreatedBy = request.PatientId ?? "patient-prescreen",
+            CreatedBy = callerId,
             State = nameof(SampleState.Draft),
-            MicronsPerPixel = request.MicronsPerPixel ?? 0.05,
-            FramesPerSecond = 30.0,
-            ChamberDepthMicrons = 10.0,
+            MicronsPerPixel = 0,
+            FramesPerSecond = 0,
+            ChamberDepthMicrons = 0,
             IsDeleted = false
         };
 
@@ -114,6 +129,7 @@ public class SamplesController : ControllerBase
 
         bool isStaff = IsStaffCaller();
         bool isMobile = IsMobileCaller();
+        if (!isStaff && sample.CreatedBy != CallerObjectId()) return Forbid();
 
         if (!isStaff && sample.State != nameof(SampleState.Released))
         {
@@ -155,6 +171,8 @@ public class SamplesController : ControllerBase
         var sample = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
         if (sample == null)
             return NotFound(new { error = $"Sample {sampleId} not found." });
+
+        if (sample.CreatedBy != CallerObjectId() && !IsStaffCaller()) return Forbid();
 
         bool isVideo = string.Equals(fileType, "video", StringComparison.OrdinalIgnoreCase);
         string container = isVideo ? "raw-video" : "raw-images";
@@ -225,7 +243,7 @@ public class SamplesController : ControllerBase
         if (sample == null)
             return NotFound(new { error = $"Sample {sampleId} not found." });
 
-        var callerId = User.FindFirst("preferred_username")?.Value ?? User.Identity?.Name ?? "Unknown";
+        var callerId = CallerObjectId();
         if (sample.CreatedBy != callerId && !IsStaffCaller())
             return Forbid();
 
@@ -271,7 +289,7 @@ public class SamplesController : ControllerBase
             return NotFound(new { error = $"Sample {sampleId} not found." });
 
         // Verify ownership: only sample creator or staff can trigger analysis
-        var callerId = User.FindFirst("preferred_username")?.Value ?? User.Identity?.Name ?? "Unknown";
+        var callerId = CallerObjectId();
         if (sample.CreatedBy != callerId && !IsStaffCaller())
             return Forbid();
 
@@ -301,16 +319,29 @@ public class SamplesController : ControllerBase
         if (!result.Success)
             return StatusCode(409, new { error = result.FailureReason });
 
-        sample.State = result.NewState.ToString();
-        await _db.SaveChangesAsync();
+        var workflow = _httpClients.CreateClient("workflow");
+        var functionKey = _configuration["Workflow:FunctionKey"];
+        if (string.IsNullOrWhiteSpace(functionKey))
+            return StatusCode(503, new { error = "WORKFLOW_NOT_CONFIGURED" });
 
-        _logger.LogInformation("Analysis start for sample {SampleId}: {From} -> {To}", sampleId, current, result.NewState);
-
-        return Ok(new
+        using var startRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"api/v1/analysis/{Uri.EscapeDataString(sampleId)}/start");
+        startRequest.Headers.Add("x-functions-key", functionKey);
+        using var workflowResponse = await workflow.SendAsync(startRequest);
+        if (!workflowResponse.IsSuccessStatusCode)
         {
-            sampleId = sampleId,
-            status = result.NewState.ToString(),
-            trackingId = Guid.NewGuid().ToString("N")
+            _logger.LogError("Workflow starter returned {StatusCode} for sample {SampleId}",
+                (int)workflowResponse.StatusCode, sampleId);
+            return StatusCode(502, new { error = "WORKFLOW_START_FAILED" });
+        }
+
+        _logger.LogInformation("Durable analysis scheduled for sample {SampleId}", sampleId);
+        return Accepted(new
+        {
+            sampleId,
+            status = "WorkflowScheduled",
+            trackingId = sampleId
         });
     }
 }

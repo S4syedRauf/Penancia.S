@@ -96,7 +96,8 @@ dotnet publish -c Release
 
 ## Known limits of this deployment
 
-- No frontend exists in the repo, so no Static Web App is deployed; Api CORS allowlists only localhost dev origins (`http://localhost:5173`, `http://localhost:3000`).
+- The React frontend now exists in `frontend/`, but the current Static Web Apps workflow publishes only its browser bundle. That static hosting model does not run the required Express application APIs (`/v1/state`, report, booking, assistant, and image-session routes). Do not treat that workflow as a complete full-stack deployment. Host Express separately (for example, as a Container App) or complete and verify an equivalent .NET API migration before enabling static production traffic.
+- Api CORS allows the recorded Static Web App and storage-web origins plus localhost, but CORS alone does not implement missing API contracts.
 - The orchestrator waits for all three model events and for the `sample_signed_off` durable event; Api sign-off does not raise that event (see the fix-batch entry in CHANGELOG.md) — reconcile before relying on the durable wait.
 - The 7-day human-wait timeouts are operational choices needing lab-ops confirmation.
 - Gotenberg runs with internal ingress only; the Function App calls it via the `GotenbergUrl` setting.

@@ -400,9 +400,16 @@ export const SemenPreScreenView: React.FC<SemenPreScreenViewProps> = ({
             createdAt: nowIso,
           };
 
-      // Issue 1: Update in-memory React state immediately via addSemenSession
-      addSemenSession(sessionRun);
-      setCurrentRun(sessionRun);
+      let completedSession = sessionRun;
+      if (uploadedFile && !BACKEND_ENABLED) {
+        // The browser derives measurements from the actual pixels; Express persists
+        // that same research-only session without substituting fixture results.
+        setProgressPct(95);
+        completedSession = (await penanciaApi.saveSemenSession(sessionRun)).session;
+      }
+
+      addSemenSession(completedSession);
+      setCurrentRun(completedSession);
 
     } catch (err: any) {
       // Issue 3: Fail loudly with visible error banner

@@ -786,12 +786,18 @@ export const SubScreens: React.FC<SubScreensProps> = ({ view, onBack, onOpenSubV
                     isAr ? def.withdrawalNoteAr : def.withdrawalNoteEn
                   }`}
                   endContent={
-                    <Switch
-                      label={isAr ? def.titleAr : def.titleEn}
-                      isLabelHidden
-                      value={isOn}
-                      onChange={(checked) => toggleConsent(def.key, checked)}
-                    />
+                    <>
+                      <span id={`consent-${def.key}-label`} className="sr-only">
+                        {isAr ? def.titleAr : def.titleEn}
+                      </span>
+                      <Switch
+                        label={isAr ? def.titleAr : def.titleEn}
+                        aria-labelledby={`consent-${def.key}-label`}
+                        isLabelHidden
+                        value={isOn}
+                        onChange={(checked) => toggleConsent(def.key, checked)}
+                      />
+                    </>
                   }
                 />
               );

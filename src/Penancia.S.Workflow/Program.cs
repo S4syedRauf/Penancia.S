@@ -1,5 +1,6 @@
 using Azure.Identity;
 using Azure.Messaging.ServiceBus;
+using Azure.Storage.Blobs;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -58,6 +59,26 @@ var host = new HostBuilder()
         services.AddSingleton(_ => new ServiceBusClient(
             sbFqdn,
             new DefaultAzureCredential()));
+
+        services.AddSingleton(_ =>
+        {
+            var account = ctx.Configuration["Azure:StorageAccount"]
+                ?? throw new InvalidOperationException("Missing configuration 'Azure:StorageAccount'.");
+            var credentialOptions = new DefaultAzureCredentialOptions();
+            var clientId = ctx.Configuration["Azure:ManagedIdentityClientId"];
+            if (!string.IsNullOrWhiteSpace(clientId))
+                credentialOptions.ManagedIdentityClientId = clientId;
+            return new BlobServiceClient(
+                new Uri($"https://{account}.blob.core.windows.net"),
+                new DefaultAzureCredential(credentialOptions));
+        });
+
+        services.AddHttpClient("gotenberg", client =>
+        {
+            client.BaseAddress = new Uri(ctx.Configuration["Gotenberg:BaseUrl"]
+                ?? throw new InvalidOperationException("Missing configuration 'Gotenberg:BaseUrl'."));
+            client.Timeout = TimeSpan.FromMinutes(2);
+        });
     })
     .Build();
 

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { getRequestIdentity, type RequestIdentity } from './requestIdentity.ts';
 import { APP_IMAGES } from '../data/assets.ts';
 import {
   CONSENT_DEFINITIONS,
@@ -78,35 +79,45 @@ export interface PanaceaStoreData {
   featureFlags: FeatureFlags;
 }
 
-const DATA_DIR = path.resolve(process.cwd(), '.panacea-data');
-const STORE_PATH = path.join(DATA_DIR, 'store.json');
+const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(process.cwd(), '.panacea-data'));
+const LEGACY_STORE_PATH = path.join(DATA_DIR, 'store.json');
+const LOCAL_IDENTITY: RequestIdentity = {
+  userId: 'usr_panacea_dubai_01',
+  tenantId: 'local',
+  storageKey: 'local-demo',
+  includeDemoData: true,
+};
 
 export function getTodayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-export function createInitialStoreData(): PanaceaStoreData {
+export function createInitialStoreData(identity?: RequestIdentity): PanaceaStoreData {
   const now = new Date().toISOString();
   const today = getTodayISO();
+  const includeDemoData = identity?.includeDemoData ?? true;
+  const userId = identity?.userId ?? LOCAL_IDENTITY.userId;
 
   const consents = {} as Record<ConsentKey, ConsentRecord>;
   for (const def of CONSENT_DEFINITIONS) {
     consents[def.key] = {
       key: def.key,
       version: def.version,
-      state: def.key === 'app_data' || def.key === 'reports_store' || def.key === 'notifications',
+      state:
+        def.key === 'app_data' ||
+        (includeDemoData && (def.key === 'reports_store' || def.key === 'notifications')),
       changedAt: now,
     };
   }
 
   const initialPlanForToday: Record<string, PlanActionStatus> = {};
   PANACEA_PLAN_TEMPLATES.forEach((tpl, idx) => {
-    initialPlanForToday[tpl.templateCode] = idx < 2 ? 'done' : 'pending';
+    initialPlanForToday[tpl.templateCode] = includeDemoData && idx < 2 ? 'done' : 'pending';
   });
 
   const seededReport: VaultReport = {
     docId: 'rep_dhc_sample_1',
-    userId: 'usr_panacea_dubai_01',
+    userId,
     fileName: 'AlRazi_DHCC_Semen_Report_Sample.pdf',
     mime: 'application/pdf',
     privacyMode: 'covered',
@@ -218,8 +229,8 @@ export function createInitialStoreData(): PanaceaStoreData {
 
   return {
     user: {
-      userId: 'usr_panacea_dubai_01',
-      alias: 'Omar-DXB-482',
+      userId,
+      alias: includeDemoData ? 'Omar-DXB-482' : `User-${identity?.storageKey.slice(0, 8) || 'local'}`,
       language: 'en',
       timeZone: 'Asia/Dubai',
       discreetMode: false,
@@ -250,32 +261,36 @@ export function createInitialStoreData(): PanaceaStoreData {
     slotHolds: [],
     idempotencyKeys: {},
     outboxMessages: [],
-    reports: [seededReport],
-    followUpTasks: [seededTask],
+    reports: includeDemoData ? [seededReport] : [],
+    followUpTasks: includeDemoData ? [seededTask] : [],
     partnerApplications: [],
     semenSessions: [],
-    symptoms: [
-      {
-        id: 'sym_init_1',
-        date: today,
-        time: '08:15',
-        title: 'Baseline Check-in (No urgent symptoms)',
-        severity: 'mild',
-        notes: 'Optional symptom diary entry example — user-reported only.',
-        source: 'user_reported',
-      },
-    ],
+    symptoms: includeDemoData
+      ? [
+          {
+            id: 'sym_init_1',
+            date: today,
+            time: '08:15',
+            title: 'Baseline Check-in (No urgent symptoms)',
+            severity: 'mild',
+            notes: 'Optional symptom diary entry example — user-reported only.',
+            source: 'user_reported',
+          },
+        ]
+      : [],
     checkIns: [],
-    wearables: [
-      {
-        localDate: today,
-        sleepHours: 7.4,
-        restingHrBpm: 62,
-        hrvRmssdMs: 48,
-        steps: 6850,
-        source: 'Apple HealthKit',
-      },
-    ],
+    wearables: includeDemoData
+      ? [
+          {
+            localDate: today,
+            sleepHours: 7.4,
+            restingHrBpm: 62,
+            hrvRmssdMs: 48,
+            steps: 6850,
+            source: 'Apple HealthKit',
+          },
+        ]
+      : [],
     planCompletions: {
       [today]: initialPlanForToday,
     },
@@ -289,9 +304,9 @@ export function createInitialStoreData(): PanaceaStoreData {
       },
     ],
     featureFlags: {
-      askLlmMode: 'Full',
-      homeResearchEnabled: true,
-      homeResearchKillSwitch: false,
+      askLlmMode: includeDemoData ? 'Full' : 'TemplatesOnly',
+      homeResearchEnabled: includeDemoData,
+      homeResearchKillSwitch: !includeDemoData,
       patientResultBandsEnabled: false,
       labAdapterMode: 'simulated_dubai_fixture',
       noonAutoOrderEnabled: false,
@@ -299,50 +314,80 @@ export function createInitialStoreData(): PanaceaStoreData {
   };
 }
 
-let memoryStore: PanaceaStoreData | null = null;
+const memoryStores = new Map<string, PanaceaStoreData>();
 
-function ensureDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+function currentIdentity(): RequestIdentity {
+  const identity = getRequestIdentity();
+  if (identity) return identity;
+  if (process.env.AUTH_REQUIRE_ENTRA === 'true') {
+    throw new Error('A verified request identity is required to access clinical state.');
   }
+  return LOCAL_IDENTITY;
+}
+
+function storePath(identity: RequestIdentity): string {
+  return path.join(DATA_DIR, 'users', identity.storageKey, 'store.json');
+}
+
+function useMemoryStore(): boolean {
+  return process.env.PERSISTENCE_MODE === 'memory';
+}
+
+function ensureDir(identity: RequestIdentity): void {
+  fs.mkdirSync(path.dirname(storePath(identity)), { recursive: true, mode: 0o700 });
 }
 
 export function loadStore(): PanaceaStoreData {
-  if (memoryStore) return memoryStore;
-  try {
-    ensureDir();
-    if (fs.existsSync(STORE_PATH)) {
-      const raw = fs.readFileSync(STORE_PATH, 'utf8');
-      const parsed = JSON.parse(raw) as PanaceaStoreData;
-      if (parsed && parsed.user && parsed.consents) {
-        memoryStore = parsed;
-        return memoryStore;
+  const identity = currentIdentity();
+  const cached = memoryStores.get(identity.storageKey);
+  if (cached) return cached;
+  if (!useMemoryStore()) {
+    const filePath = storePath(identity);
+    ensureDir(identity);
+
+    if (fs.existsSync(filePath)) {
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as PanaceaStoreData;
+      if (!parsed?.user || !parsed.consents || parsed.user.userId !== identity.userId) {
+        throw new Error('Stored clinical state failed its ownership validation.');
       }
+      memoryStores.set(identity.storageKey, parsed);
+      return parsed;
     }
-  } catch {
-    // fallback cleanly to initial store
+
+    // Migrate only the explicitly local single-user demo. A cloud legacy file is
+    // never assigned to the first person who signs in.
+    if (identity.tenantId === 'local' && fs.existsSync(LEGACY_STORE_PATH)) {
+      const legacy = JSON.parse(fs.readFileSync(LEGACY_STORE_PATH, 'utf8')) as PanaceaStoreData;
+      legacy.user.userId = identity.userId;
+      saveStore(legacy);
+      return legacy;
+    }
   }
-  memoryStore = createInitialStoreData();
-  saveStore(memoryStore);
-  return memoryStore;
+
+  const initial = createInitialStoreData(identity);
+  saveStore(initial);
+  return initial;
 }
 
 export function saveStore(data: PanaceaStoreData): void {
-  memoryStore = data;
-  try {
-    ensureDir();
-    const tmpPath = `${STORE_PATH}.tmp`;
-    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), 'utf8');
-    fs.renameSync(tmpPath, STORE_PATH);
-  } catch {
-    // Non-fatal in read-only edge envs
+  const identity = currentIdentity();
+  if (data.user.userId !== identity.userId) {
+    throw new Error('Refusing to persist clinical state for a different user.');
   }
+  memoryStores.set(identity.storageKey, data);
+  if (useMemoryStore()) return;
+
+  ensureDir(identity);
+  const filePath = storePath(identity);
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2), { encoding: 'utf8', mode: 0o600 });
+  fs.renameSync(tmpPath, filePath);
 }
 
 export function resetStore(): PanaceaStoreData {
-  memoryStore = createInitialStoreData();
-  saveStore(memoryStore);
-  return memoryStore;
+  const fresh = createInitialStoreData(currentIdentity());
+  saveStore(fresh);
+  return fresh;
 }
 
 export function appendAuditAndOutbox(

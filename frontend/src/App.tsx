@@ -11,6 +11,7 @@ import {
   FileText,
   FlaskConical,
   Globe,
+  LogOut,
   Microscope,
   Moon,
   Search,
@@ -192,6 +193,16 @@ const PanaceaShell: React.FC<ShellProps> = ({ themeMode, onToggleThemeMode }) =>
             variant="ghost"
             size="sm"
             onClick={onToggleThemeMode}
+          />
+          <IconButton
+            label={isAr ? 'تسجيل الخروج' : 'Sign out'}
+            icon={<LogOut className="w-4 h-4" />}
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              localStorage.removeItem('panacea_offline_state_v2');
+              window.location.assign('/.auth/logout?post_logout_redirect_uri=%2F');
+            }}
           />
           <div className="hidden sm:inline-flex">
             <Button

@@ -90,6 +90,12 @@ builder.Services.AddAuthorization(options =>
 });
 
 builder.Services.AddControllers();
+builder.Services.AddHttpClient("workflow", client =>
+{
+    client.BaseAddress = new Uri(builder.Configuration["Workflow:BaseUrl"]
+        ?? throw new InvalidOperationException("Missing configuration 'Workflow:BaseUrl'."));
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 

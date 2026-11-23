@@ -25,6 +25,7 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { DUBAI_LOCATION_PRESETS } from '../../data/panaceaCatalogs';
 import { usePanacea } from '../../store/PanaceaContext';
 import type { PartnerLabSite, SubView } from '../../types/panacea';
+import { postApiJson } from '../../services/penanciaApiClient';
 
 interface LabBookingViewProps {
   onBack: () => void;
@@ -52,6 +53,7 @@ export const LabBookingView: React.FC<LabBookingViewProps> = ({ onBack, onOpenSu
   const [locationDenied, setLocationDenied] = useState(false);
   const [quotes, setQuotes] = useState<QuoteResult[]>([]);
   const [loadingQuotes, setLoadingQuotes] = useState(false);
+  const [quoteError, setQuoteError] = useState<string | null>(null);
 
   const [chosenPartnerId, setChosenPartnerId] = useState<string>('partner-dhc-simulated');
   const [chosenMode, setChosenMode] = useState<'home_collection' | 'centre_appointment'>(
@@ -77,32 +79,35 @@ export const LabBookingView: React.FC<LabBookingViewProps> = ({ onBack, onOpenSu
     forceCapZero?: boolean
   ) => {
     setLoadingQuotes(true);
+    setQuoteError(null);
     try {
-      const resp = await fetch('/v1/quotes', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userLat: lat,
-          userLng: lng,
-          locationDenied: denied,
-          forceCapacityZero: Boolean(forceCapZero),
-        }),
+      const data = await postApiJson<{ quotes: QuoteResult[] }>('/v1/quotes', {
+        userLat: lat,
+        userLng: lng,
+        locationDenied: denied,
+        forceCapacityZero: Boolean(forceCapZero),
       });
-      if (resp.ok) {
-        const data = (await resp.json()) as { quotes: QuoteResult[] };
-        setQuotes(data.quotes);
-        const primary =
-          data.quotes.find((q) => q.partner.partnerId === chosenPartnerId) || data.quotes[0];
-        if (primary) {
-          if (primary.homeCollectionEligible && primary.homeSlots.length > 0) {
-            setChosenMode('home_collection');
-            setChosenSlot(primary.homeSlots[0]);
-          } else {
-            setChosenMode('centre_appointment');
-            setChosenSlot(primary.centreSlots[0] || 'Tomorrow 08:30 AM (Centre)');
-          }
+      setQuotes(data.quotes);
+      const primary =
+        data.quotes.find((q) => q.partner.partnerId === chosenPartnerId) || data.quotes[0];
+      if (primary) {
+        if (primary.homeCollectionEligible && primary.homeSlots.length > 0) {
+          setChosenMode('home_collection');
+          setChosenSlot(primary.homeSlots[0]);
+        } else {
+          setChosenMode('centre_appointment');
+          setChosenSlot(primary.centreSlots[0] || 'Tomorrow 08:30 AM (Centre)');
         }
       }
+    } catch (err) {
+      setQuotes([]);
+      setQuoteError(
+        err instanceof Error
+          ? err.message
+          : isAr
+            ? 'تعذر تحميل عروض المختبر من الخادم.'
+            : 'Could not load lab quotes from the backend.',
+      );
     } finally {
       setLoadingQuotes(false);
     }
@@ -136,36 +141,35 @@ export const LabBookingView: React.FC<LabBookingViewProps> = ({ onBack, onOpenSu
       if (includeAbstinenceNote) optionalFields.push('Abstinence timing note');
       if (includeScreeningReason) optionalFields.push('Summary routing flag');
 
-      const resp = await fetch('/v1/orders', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Idempotency-Key': activeIdemKey,
-        },
-        body: JSON.stringify({
-          partnerId: chosenPartnerId,
-          mode: chosenMode,
-          slotLabel: chosenSlot,
-          selectedFields: ['Opaque Ticket Code', 'Selected Test: Semen Analysis', 'Slot Window'],
-          optionalFieldsIncluded: optionalFields,
-          consentApproved: approveShare,
-        }),
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        setBookingErr(isAr ? data.message_ar : data.message_en);
-      } else {
-        setBookingMsg(
-          data.idempotentReplay
-            ? isAr
-              ? `تم منع التكرار بنجاح (Idempotency Replay): نفس التذكرة ${data.order.ticketCode}.`
-              : `Idempotent Replay Verified: Returned same ticket ${data.order.ticketCode} without double-booking.`
-            : isAr
-              ? `تم تأكيد الحجز المحاكى! رقم التذكرة: ${data.order.ticketCode}`
-              : `Simulated Booking Confirmed! Opaque Ticket: ${data.order.ticketCode}`
-        );
-        await refreshState();
-      }
+      const data = await postApiJson<{
+        order: { ticketCode: string };
+        idempotentReplay?: boolean;
+      }>('/v1/orders', {
+        partnerId: chosenPartnerId,
+        mode: chosenMode,
+        slotLabel: chosenSlot,
+        selectedFields: ['Opaque Ticket Code', 'Selected Test: Semen Analysis', 'Slot Window'],
+        optionalFieldsIncluded: optionalFields,
+        consentApproved: approveShare,
+      }, { 'Idempotency-Key': activeIdemKey });
+      setBookingMsg(
+        data.idempotentReplay
+          ? isAr
+            ? `تم منع التكرار بنجاح (Idempotency Replay): نفس التذكرة ${data.order.ticketCode}.`
+            : `Idempotent Replay Verified: Returned same ticket ${data.order.ticketCode} without double-booking.`
+          : isAr
+            ? `تم تأكيد الحجز المحاكى! رقم التذكرة: ${data.order.ticketCode}`
+            : `Simulated Booking Confirmed! Opaque Ticket: ${data.order.ticketCode}`
+      );
+      await refreshState();
+    } catch (err) {
+      setBookingErr(
+        err instanceof Error
+          ? err.message
+          : isAr
+            ? 'تعذر تأكيد الحجز على الخادم.'
+            : 'The backend could not confirm this booking.',
+      );
     } finally {
       setSubmitting(false);
     }
@@ -256,6 +260,8 @@ export const LabBookingView: React.FC<LabBookingViewProps> = ({ onBack, onOpenSu
         <Heading level={2}>
           {isAr ? 'عروض الشركاء المؤكدة (محاكاة)' : 'Verified Partner Quotes (Simulated Adapter)'}
         </Heading>
+
+        {quoteError && <Banner status="error" title={quoteError} />}
 
         {loadingQuotes ? (
           <Card padding={4}>

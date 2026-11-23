@@ -33,7 +33,7 @@ npm run dev
 
 Open **http://localhost:3000**. The default configuration uses the local Express pipeline. Gemini-powered features require `GEMINI_API_KEY`; other application features can be used without it.
 
-To use the Azure backend instead, configure `VITE_API_BASE` and set `VITE_BACKEND_ENABLED=true` in `frontend/.env.local`. Do not commit environment files or credentials.
+To enable the optional .NET blob-upload and Durable Functions sample workflow, configure `VITE_API_BASE` and set `VITE_BACKEND_ENABLED=true` in `frontend/.env.local`. Keep Express available for full Panacea application state, report-vault, booking, assistant, and image-session APIs; the .NET API is not currently a drop-in replacement for all Express routes. Do not commit environment files or credentials.
 
 ### Backend validation
 

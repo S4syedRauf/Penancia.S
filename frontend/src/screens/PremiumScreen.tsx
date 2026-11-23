@@ -29,6 +29,7 @@ import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { usePanacea } from '../store/PanaceaContext';
 import type { AskMessage, SubView } from '../types/panacea';
+import { postApiJson } from '../services/penanciaApiClient';
 
 interface PremiumScreenProps {
   onBack: () => void;
@@ -81,12 +82,13 @@ export const PremiumScreen: React.FC<PremiumScreenProps> = ({ onBack, onOpenSubV
     setSending(true);
 
     try {
-      const resp = await fetch('/v1/ask', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: trimmed, language }),
-      });
-      const data = await resp.json();
+      const data = await postApiJson<{
+        text?: string;
+        sourceLabels?: string[];
+        buttons?: AskMessage['buttons'];
+        urgentAlert?: boolean;
+        modeUsed?: AskMessage['modeUsed'];
+      }>('/v1/ask', { question: trimmed, language });
       if (data.urgentAlert) {
         setEmergencyOpen(true);
       }
@@ -101,14 +103,15 @@ export const PremiumScreen: React.FC<PremiumScreenProps> = ({ onBack, onOpenSubV
         createdAt: new Date().toISOString(),
       };
       setAskMessages((prev) => [...prev, assistantMsg]);
-    } catch {
+    } catch (err) {
+      const backendMessage = err instanceof Error ? err.message : '';
       const fallbackMsg: AskMessage = {
         id: `a_off_${Date.now()}`,
         role: 'assistant',
-        text: isAr
+        text: backendMessage || (isAr
           ? 'الاتصال غير متاح الآن. إذا كان لديك ألم شديد أو تورم أو دم، اتصل فوراً على ٩٩٨.'
-          : 'Network unavailable. If you have sudden severe pain, swelling, or blood, call UAE 998 immediately.',
-        sourceLabels: [isAr ? 'الوضع دون اتصال' : 'Offline Safety Fallback'],
+          : 'Network unavailable. If you have sudden severe pain, swelling, or blood, call UAE 998 immediately.'),
+        sourceLabels: [isAr ? 'الوضع دون اتصال' : 'Backend Request Failed'],
         modeUsed: 'Off',
         createdAt: new Date().toISOString(),
       };

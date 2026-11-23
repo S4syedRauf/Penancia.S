@@ -10,6 +10,30 @@
     },
     "environment": {
       "value": "dev"
+    },
+    "entraWebClientId": {
+      "reference": {
+        "keyVault": { "id": "/subscriptions/34d9e1f7-a86f-49e1-9624-0b741ca3929e/resourceGroups/rg-penancias-dev/providers/Microsoft.KeyVault/vaults/kv-penancias" },
+        "secretName": "entra-web-client-id"
+      }
+    },
+    "entraApiClientId": {
+      "reference": {
+        "keyVault": { "id": "/subscriptions/34d9e1f7-a86f-49e1-9624-0b741ca3929e/resourceGroups/rg-penancias-dev/providers/Microsoft.KeyVault/vaults/kv-penancias" },
+        "secretName": "entra-api-client-id"
+      }
+    },
+    "entraWebClientSecret": {
+      "reference": {
+        "keyVault": { "id": "/subscriptions/34d9e1f7-a86f-49e1-9624-0b741ca3929e/resourceGroups/rg-penancias-dev/providers/Microsoft.KeyVault/vaults/kv-penancias" },
+        "secretName": "entra-web-client-secret"
+      }
+    },
+    "workflowFunctionKey": {
+      "reference": {
+        "keyVault": { "id": "/subscriptions/34d9e1f7-a86f-49e1-9624-0b741ca3929e/resourceGroups/rg-penancias-dev/providers/Microsoft.KeyVault/vaults/kv-penancias" },
+        "secretName": "workflow-function-key"
+      }
     }
   }
 }
