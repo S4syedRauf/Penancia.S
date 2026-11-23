@@ -66,6 +66,7 @@ public class SqlServerCalibrationTests
             Status = "Verified"
         };
         db.MediaAssets.Add(asset);
+        await db.SaveChangesAsync();
 
         var cal = new CalibrationEntity
         {
@@ -79,7 +80,6 @@ public class SqlServerCalibrationTests
         };
         db.Calibrations.Add(cal);
         sample.CalibrationId = cal.CalibrationId;
-
         await db.SaveChangesAsync();
 
         try
@@ -121,14 +121,20 @@ public class SqlServerCalibrationTests
         }
         finally
         {
-            // Cleanup
+            // Cleanup: break circular FK reference before deleting
+            var toRemoveSample = await db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId);
+            if (toRemoveSample != null)
+            {
+                toRemoveSample.CalibrationId = null;
+                await db.SaveChangesAsync();
+            }
+
             var toRemoveCal = await db.Calibrations.FirstOrDefaultAsync(c => c.CalibrationId == cal.CalibrationId);
             if (toRemoveCal != null) db.Calibrations.Remove(toRemoveCal);
 
             var toRemoveAsset = await db.MediaAssets.FirstOrDefaultAsync(a => a.AssetId == asset.AssetId);
             if (toRemoveAsset != null) db.MediaAssets.Remove(toRemoveAsset);
 
-            var toRemoveSample = await db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId);
             if (toRemoveSample != null) db.Samples.Remove(toRemoveSample);
 
             await db.SaveChangesAsync();
