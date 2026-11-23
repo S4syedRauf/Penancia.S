@@ -77,17 +77,19 @@ export function buildSemenReport(
       morphology: hasCandidate ? analysis.morphologyCategory : (isAr ? 'غير متاح في هذا الوضع' : 'Not available in this mode'),
       headLength: hasCandidate ? `${format(analysis.headLengthUm)} µm` : notMeasured(language),
       headWidth: hasCandidate ? `${format(analysis.headWidthUm)} µm` : notMeasured(language),
-      lengthToWidthRatio: hasCandidate ? format(analysis.lengthToWidthRatio) : notMeasured(language),
-      acrosomeCoverage: hasCandidate ? `${Math.round(analysis.acrosomeCoveragePct)}% ${isAr ? '(تقديري)' : '(estimated)'}` : notMeasured(language),
+      lengthToWidthRatio: hasCandidate ? `L/W ${format(analysis.lengthToWidthRatio)}` : notMeasured(language),
+      acrosomeCoverage: hasCandidate ? `Acrosome ${Math.round(analysis.acrosomeCoveragePct)}% ${isAr ? '(تقديري)' : '(estimated)'}` : notMeasured(language),
     },
     capture: {
       dimensions: `${analysis.width} × ${analysis.height} px`,
       focusVariance: format(analysis.focusVariance),
       darkClipping: `${format(analysis.clippedDarkPct)}%`,
       brightClipping: `${format(analysis.clippedBrightPct)}%`,
-      calibration: isAr
-        ? 'المعايرة غير مطبقة — القياسات تتطلب معايرة ميكرومتر'
-        : 'Calibration not applied — measurements require micrometer calibration',
+      calibration: hasCandidate && run.kitProfile.calibratedUmPerPx
+        ? `${run.kitProfile.calibratedUmPerPx} µm/px`
+        : (isAr
+          ? 'المعايرة غير مطبقة — القياسات تتطلب معايرة ميكرومتر'
+          : 'Calibration not applied — measurements require micrometer calibration'),
     },
     notAssessed: {
       concentration: notAssessed(language),
@@ -97,8 +99,8 @@ export function buildSemenReport(
     },
     summary: hasCandidate
       ? (isAr
-        ? `تم قياس أكبر بنية أمامية في هذه الصورة. التصنيف الشكلي المبدئي هو ${analysis.morphologyCategory}. هذا وصف آلي لبنية واحدة وليس تصنيفاً سريرياً للحيوانات المنوية.`
-        : `The largest segmented foreground structure in this image was measured. Its preliminary shape category is ${analysis.morphologyCategory}. This is an automated description of one structure, not a clinical sperm classification.`)
+        ? `تم قياس أكبر بنية أمامية في هذه الصورة. التصنيف الشكلي المبدئي هو ${analysis.morphologyCategory}. TZI غير مقاس.`
+        : `The largest segmented foreground structure in this image was measured. Its preliminary shape category is ${analysis.morphologyCategory}. TZI is not assessed.`)
       : (isAr
         ? 'فحص جودة الصورة اكتمل. القياسات الخلوية غير مقاسة في هذا الفحص التمهيدي.'
         : 'Image quality gate passed. Cell morphology and cellular dimensions are not reported in this preliminary pre-screen.'),

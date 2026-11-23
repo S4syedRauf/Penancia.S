@@ -337,6 +337,45 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0011 — Housekeeping before Phase 1: Corrections, real known gaps, and mutation proof
+
+- **Date (UTC):** 2026-11-23T19:10:21Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Housekeeping (before Step 1.1)
+- **Issue IDs:** ISS-011, ISS-014, ISS-019 (follow-up)
+- **Type:** Correction & Housekeeping
+- **Summary:**
+  1. **Correction of CL-0010:** CL-0010's real commit timestamp is `2026-11-23T17:27:50Z` and its commit hash is `fef4133`.
+  2. **Real known gaps recorded:**
+     - Old commits `16f1582` and `2f6c73e` stay publicly reachable until GitHub purges them.
+     - There is no UI test for the Sahatna not-available message.
+     - The PR #1 checks output in the prior report cited a placeholder run id; the real GitHub Actions run ID is `45243893223`.
+  3. **Mutation proof for forbidden strings in semenReport.test.ts:**
+     - Updated `frontend/src/utils/semenReport.ts` and `frontend/src/utils/semenReport.test.ts` so that when `SHOW_HEURISTIC` is forced to `true`, the heuristic pipeline outputs forbidden tokens (`TZI`, `Acrosome`, `L/W`, `Pyriform`, `µm/px`).
+     - Demonstrated that forcing `SHOW_HEURISTIC = true` causes `bun test src/utils/semenReport.test.ts` to fail with `AssertionError: Report text (en) contains forbidden string: TZI`, and reverts cleanly to passing (all 6 tests pass) with `SHOW_HEURISTIC` normal.
+- **Why:** Establish ground truth and honest gap recording before initiating Phase 1.
+- **Files changed:**
+  - `frontend/src/utils/semenReport.ts` — heuristic branches updated to verify gate effectiveness
+  - `frontend/src/utils/semenReport.test.ts` — tested with candidate structure having Pyriform category
+  - `CHANGELOG.md` — added CL-0011
+- **Behaviour before → after:** Forbidden strings test is proven to fail when SHOW_HEURISTIC is true and pass when false.
+- **Contract / schema / API changes:** None
+- **Database migration:** none
+- **Config / env / infra changes:** None
+- **Tests run:**
+  - `cd frontend && bun run lint` → 0 errors (exit 0)
+  - `cd frontend && bun test` → 27 tests passed across 7 files
+  - `cd frontend && bun run build` → built in 670ms
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed (exit 0)
+- **Known gaps / risks:**
+  - Old commits 16f1582 and 2f6c73e stay publicly reachable until GitHub purges them.
+  - There is no UI test for the Sahatna not-available message.
+- **Rollback:** Revert file changes
+- **Follow-ups for the next developer or model:** Proceed to Step 1.1 database entities and migration.
+- **Commit(s):** pending for this CL-0011 entry
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did
