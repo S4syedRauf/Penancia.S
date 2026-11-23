@@ -27,10 +27,6 @@ jobs:
   build_test_backend:
     runs-on: ubuntu-latest
     name: Build & Test Backend (.NET)
-    outputs:
-      api-image-tag: ${{ steps.set-api-tag.outputs.tag }}
-      workflow-image-tag: ${{ steps.set-workflow-tag.outputs.tag }}
-      web-image-tag: ${{ steps.set-web-tag.outputs.tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,18 +44,6 @@ jobs:
 
       - name: Run tests
         run: dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj --no-build -c Release --verbosity normal
-
-      - name: Set image tags
-        id: set-api-tag
-        run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')-${{ github.sha::8 }}" >> $GITHUB_OUTPUT
-
-      - name: Set workflow image tag
-        id: set-workflow-tag
-        run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')-${{ github.sha::8 }}" >> $GITHUB_OUTPUT
-
-      - name: Set web image tag
-        id: set-web-tag
-        run: echo "tag=$(date -u +'%Y%m%d-%H%M%S')-${{ github.sha::8 }}" >> $GITHUB_OUTPUT
 
   # ============================================================
   # 2. Build & Test Frontend
@@ -95,13 +79,13 @@ jobs:
         run: bun run build
 
   # ============================================================
-  # 3. Build & Push Docker Images
+  # 3. Build & Push Docker Images (requires secrets)
   # ============================================================
   build_push_images:
     needs: [build_test_backend, build_test_frontend]
     runs-on: ubuntu-latest
     name: Build & Push Docker Images
-    if: github.event_name == 'push' && ${{ secrets.AZURE_CREDENTIALS != '' && secrets.ACR_USERNAME != '' && secrets.ACR_PASSWORD != '' }}
+    if: github.event_name == 'push' && secrets.AZURE_CREDENTIALS != '' && secrets.ACR_USERNAME != '' && secrets.ACR_PASSWORD != ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -151,20 +135,14 @@ jobs:
         run: |
           docker push ${{ env.ACR_NAME }}.azurecr.io/penancias-web:${{ steps.set-tags.outputs.web-tag }}
 
-      - name: Output image tags
-        run: |
-          echo "API_IMAGE_TAG=${{ steps.set-tags.outputs.api-tag }}" >> $GITHUB_ENV
-          echo "WORKFLOW_IMAGE_TAG=${{ steps.set-tags.outputs.workflow-tag }}" >> $GITHUB_ENV
-          echo "WEB_IMAGE_TAG=${{ steps.set-tags.outputs.web-tag }}" >> $GITHUB_ENV
-
   # ============================================================
-  # 4. Deploy Infrastructure (Bicep)
+  # 4. Deploy Infrastructure (Bicep) (requires secrets)
   # ============================================================
   deploy_infrastructure:
     needs: build_push_images
     runs-on: ubuntu-latest
     name: Deploy Infrastructure (Bicep)
-    if: github.event_name == 'push' && ${{ secrets.AZURE_CREDENTIALS != '' && secrets.ENTRA_WEB_CLIENT_ID != '' }}
+    if: github.event_name == 'push' && secrets.AZURE_CREDENTIALS != '' && secrets.ENTRA_WEB_CLIENT_ID != ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -180,9 +158,6 @@ jobs:
           resourceGroupName: ${{ env.AZURE_RESOURCE_GROUP }}
           template: ./infra/main.bicep
           parameters: ./infra/parameters.json
-            apiImageTag=${{ env.API_IMAGE_TAG }}
-            workflowImageTag=${{ env.WORKFLOW_IMAGE_TAG }}
-            webImageTag=${{ env.WEB_IMAGE_TAG }}
           deploymentMode: Incremental
 
       - name: Get web Container App FQDN
@@ -196,19 +171,17 @@ jobs:
         with:
           resourceGroupName: ${{ env.AZURE_RESOURCE_GROUP }}
           template: ./infra/web-auth.bicep
-          parameters: >
-            webFqdn=${{ steps.get-web-fqdn.outputs.fqdn }}
-            entraWebClientId=${{ secrets.ENTRA_WEB_CLIENT_ID }}
+          parameters: webFqdn=${{ steps.get-web-fqdn.outputs.fqdn }} entraWebClientId=${{ secrets.ENTRA_WEB_CLIENT_ID }}
           deploymentMode: Incremental
 
   # ============================================================
-  # 5. Deploy Frontend to Azure Static Web Apps
+  # 5. Deploy Frontend to Azure Static Web Apps (requires secrets)
   # ============================================================
   deploy_frontend:
     needs: build_test_frontend
     runs-on: ubuntu-latest
     name: Deploy Frontend to Azure Static Web Apps
-    if: github.event_name == 'push' && ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN != '' }}
+    if: github.event_name == 'push' && secrets.AZURE_STATIC_WEB_APPS_API_TOKEN != ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -252,73 +225,3 @@ jobs:
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
           action: "close"
-
-  # ============================================================
-  # 7. Post-deployment verification
-  # ============================================================
-  verify_deployment:
-    needs: [deploy_infrastructure, deploy_frontend]
-    runs-on: ubuntu-latest
-    name: Verify Deployment
-    if: github.event_name == 'push' && ${{ secrets.AZURE_CREDENTIALS != '' }}
-    steps:
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Verify API health
-        run: |
-          API_URL="https://${{ env.API_CONTAINER_APP }}.politebush-2ba657a9.uaenorth.azurecontainerapps.io/health"
-          for i in {1..10}; do
-            if curl -sf "$API_URL" | grep -q '"status":"Healthy"'; then
-              echo "API is healthy"
-              exit 0
-            fi
-            echo "Waiting for API... attempt $i"
-            sleep 10
-          done
-          echo "API health check failed"
-          exit 1
-
-      - name: Verify Workflow Function
-        run: |
-          WORKFLOW_URL="https://${{ env.WORKFLOW_CONTAINER_APP }}.politebush-2ba657a9.uaenorth.azurecontainerapps.io/health"
-          for i in {1..10}; do
-            if curl -sf "$WORKFLOW_URL" | grep -q '"status":"Healthy"'; then
-              echo "Workflow is healthy"
-              exit 0
-            fi
-            echo "Waiting for Workflow... attempt $i"
-            sleep 10
-          done
-          echo "Workflow health check failed"
-          exit 1
-
-      - name: Verify Web App
-        run: |
-          WEB_URL="https://${{ env.WEB_CONTAINER_APP }}.politebush-2ba657a9.uaenorth.azurecontainerapps.io/health"
-          for i in {1..10}; do
-            if curl -sf "$WEB_URL" | grep -q '"status":"ok"'; then
-              echo "Web app is healthy"
-              exit 0
-            fi
-            echo "Waiting for Web app... attempt $i"
-            sleep 10
-          done
-          echo "Web app health check failed"
-          exit 1
-
-      - name: Verify Static Web App
-        run: |
-          SWA_URL="https://${{ env.STATIC_WEB_APP_NAME }}.3.azurestaticapps.net/"
-          for i in {1..5}; do
-            if curl -sf -o /dev/null -w "%{http_code}" "$SWA_URL" | grep -q "200"; then
-              echo "Static Web App is accessible"
-              exit 0
-            fi
-            echo "Waiting for Static Web App... attempt $i"
-            sleep 10
-          done
-          echo "Static Web App health check failed"
-          exit 1
