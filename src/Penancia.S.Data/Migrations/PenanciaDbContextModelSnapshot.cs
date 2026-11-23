@@ -58,6 +58,77 @@ namespace Penancia.S.Data.Migrations
                     b.ToTable("AuditEvents");
                 });
 
+            modelBuilder.Entity("Penancia.S.Data.Entities.CalibrationEntity", b =>
+                {
+                    b.Property<Guid>("CalibrationId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("AssetId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("ExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<int>("ImageHeightPx")
+                        .HasColumnType("int");
+
+                    b.Property<int>("ImageWidthPx")
+                        .HasColumnType("int");
+
+                    b.Property<int>("LinesDetected")
+                        .HasColumnType("int");
+
+                    b.Property<double>("MeasuredPitchPx")
+                        .HasColumnType("float");
+
+                    b.Property<double>("MicronsPerPixel")
+                        .HasColumnType("float");
+
+                    b.Property<double>("ReferencePitchUm")
+                        .HasColumnType("float");
+
+                    b.Property<string>("RejectReason")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("SampleId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<double>("SpacingCvPct")
+                        .HasColumnType("float");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("TargetId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ToolVersion")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.HasKey("CalibrationId");
+
+                    b.HasIndex("AssetId")
+                        .HasDatabaseName("IX_Calibrations_AssetId");
+
+                    b.HasIndex("SampleId")
+                        .HasDatabaseName("IX_Calibrations_SampleId");
+
+                    b.ToTable("Calibrations");
+                });
+
             modelBuilder.Entity("Penancia.S.Data.Entities.DailyCheckInEntity", b =>
                 {
                     b.Property<string>("CheckInId")
@@ -131,6 +202,45 @@ namespace Penancia.S.Data.Migrations
                     b.ToTable("FollowUpTasks");
                 });
 
+            modelBuilder.Entity("Penancia.S.Data.Entities.IdempotencyKeyEntity", b =>
+                {
+                    b.Property<string>("Key")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("SampleId")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("ResponseJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.HasKey("Key", "SampleId");
+
+                    b.ToTable("IdempotencyKeys");
+                });
+
+            modelBuilder.Entity("Penancia.S.Data.Entities.InboxMessageEntity", b =>
+                {
+                    b.Property<string>("MessageId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTime?>("RaisedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("ReceivedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.HasKey("MessageId");
+
+                    b.ToTable("InboxMessages");
+                });
+
             modelBuilder.Entity("Penancia.S.Data.Entities.LabOrderEntity", b =>
                 {
                     b.Property<string>("OrderId")
@@ -191,6 +301,87 @@ namespace Penancia.S.Data.Migrations
                     b.ToTable("LabOrders");
                 });
 
+            modelBuilder.Entity("Penancia.S.Data.Entities.MediaAssetEntity", b =>
+                {
+                    b.Property<Guid>("AssetId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("BlobName")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("Codec")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("Container")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ContentTypeDeclared")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<string>("ContentTypeSniffed")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<double?>("DurationS")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("Fps")
+                        .HasColumnType("float");
+
+                    b.Property<int?>("HeightPx")
+                        .HasColumnType("int");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<string>("RejectReason")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)");
+
+                    b.Property<string>("SampleId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("Sha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<long>("SizeBytes")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int?>("WidthPx")
+                        .HasColumnType("int");
+
+                    b.HasKey("AssetId");
+
+                    b.HasIndex("BlobName")
+                        .HasDatabaseName("IX_MediaAssets_BlobName");
+
+                    b.HasIndex("SampleId")
+                        .HasDatabaseName("IX_MediaAssets_SampleId");
+
+                    b.ToTable("MediaAssets");
+                });
+
             modelBuilder.Entity("Penancia.S.Data.Entities.ModelRunEntity", b =>
                 {
                     b.Property<string>("JobId")
@@ -245,6 +436,41 @@ namespace Penancia.S.Data.Migrations
                     b.HasIndex("SampleId", "Service");
 
                     b.ToTable("ModelRuns");
+                });
+
+            modelBuilder.Entity("Penancia.S.Data.Entities.OutboxMessageEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("Attempts")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime?>("DispatchedAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("LastError")
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DispatchedAtUtc")
+                        .HasDatabaseName("IX_OutboxMessages_DispatchedAtUtc");
+
+                    b.ToTable("OutboxMessages");
                 });
 
             modelBuilder.Entity("Penancia.S.Data.Entities.PartnerClinicEntity", b =>
@@ -329,8 +555,18 @@ namespace Penancia.S.Data.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
-                    b.Property<double>("ChamberDepthMicrons")
+                    b.Property<Guid?>("CalibrationId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<double?>("ChamberDepthMicrons")
                         .HasColumnType("float");
+
+                    b.Property<string>("ChamberTypeId")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<DateTime?>("ConsentAtUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<string>("ContentSha256")
                         .HasMaxLength(64)
@@ -355,7 +591,7 @@ namespace Penancia.S.Data.Migrations
                         .HasMaxLength(1024)
                         .HasColumnType("nvarchar(1024)");
 
-                    b.Property<double>("FramesPerSecond")
+                    b.Property<double?>("FramesPerSecond")
                         .HasColumnType("float");
 
                     b.Property<bool>("IsDeleted")
@@ -364,8 +600,12 @@ namespace Penancia.S.Data.Migrations
                     b.Property<bool>("IsLocked")
                         .HasColumnType("bit");
 
-                    b.Property<double>("MicronsPerPixel")
+                    b.Property<double?>("MicronsPerPixel")
                         .HasColumnType("float");
+
+                    b.Property<string>("ParentSampleId")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
 
                     b.Property<string>("RawImageBlobUri")
                         .HasMaxLength(1024)
@@ -383,12 +623,19 @@ namespace Penancia.S.Data.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
 
+                    b.Property<string>("WorkflowMode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
                     b.Property<string>("WorkflowVersion")
                         .IsRequired()
                         .HasMaxLength(16)
                         .HasColumnType("nvarchar(16)");
 
                     b.HasKey("SampleId");
+
+                    b.HasIndex("CalibrationId");
 
                     b.ToTable("Samples");
                 });
@@ -531,6 +778,15 @@ namespace Penancia.S.Data.Migrations
                         .IsRequired();
 
                     b.Navigation("Sample");
+                });
+
+            modelBuilder.Entity("Penancia.S.Data.Entities.SampleEntity", b =>
+                {
+                    b.HasOne("Penancia.S.Data.Entities.CalibrationEntity", "Calibration")
+                        .WithMany()
+                        .HasForeignKey("CalibrationId");
+
+                    b.Navigation("Calibration");
                 });
 
             modelBuilder.Entity("Penancia.S.Data.Entities.SlotHoldEntity", b =>

@@ -628,3 +628,299 @@ GO
 
 COMMIT;
 GO
+﻿BEGIN TRANSACTION;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261121152330_AddRawImageBlobUri'
+)
+BEGIN
+    ALTER TABLE [Samples] ADD [RawImageBlobUri] nvarchar(1024) NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261121152330_AddRawImageBlobUri'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20261121152330_AddRawImageBlobUri', N'8.0.8');
+END;
+GO
+
+COMMIT;
+GO
+
+BEGIN TRANSACTION;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    DECLARE @var0 sysname;
+    SELECT @var0 = [d].[name]
+    FROM [sys].[default_constraints] [d]
+    INNER JOIN [sys].[columns] [c] ON [d].[parent_column_id] = [c].[column_id] AND [d].[parent_object_id] = [c].[object_id]
+    WHERE ([d].[parent_object_id] = OBJECT_ID(N'[Samples]') AND [c].[name] = N'MicronsPerPixel');
+    IF @var0 IS NOT NULL EXEC(N'ALTER TABLE [Samples] DROP CONSTRAINT [' + @var0 + '];');
+    ALTER TABLE [Samples] ALTER COLUMN [MicronsPerPixel] float NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    DECLARE @var1 sysname;
+    SELECT @var1 = [d].[name]
+    FROM [sys].[default_constraints] [d]
+    INNER JOIN [sys].[columns] [c] ON [d].[parent_column_id] = [c].[column_id] AND [d].[parent_object_id] = [c].[object_id]
+    WHERE ([d].[parent_object_id] = OBJECT_ID(N'[Samples]') AND [c].[name] = N'FramesPerSecond');
+    IF @var1 IS NOT NULL EXEC(N'ALTER TABLE [Samples] DROP CONSTRAINT [' + @var1 + '];');
+    ALTER TABLE [Samples] ALTER COLUMN [FramesPerSecond] float NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    DECLARE @var2 sysname;
+    SELECT @var2 = [d].[name]
+    FROM [sys].[default_constraints] [d]
+    INNER JOIN [sys].[columns] [c] ON [d].[parent_column_id] = [c].[column_id] AND [d].[parent_object_id] = [c].[object_id]
+    WHERE ([d].[parent_object_id] = OBJECT_ID(N'[Samples]') AND [c].[name] = N'ChamberDepthMicrons');
+    IF @var2 IS NOT NULL EXEC(N'ALTER TABLE [Samples] DROP CONSTRAINT [' + @var2 + '];');
+    ALTER TABLE [Samples] ALTER COLUMN [ChamberDepthMicrons] float NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    ALTER TABLE [Samples] ADD [CalibrationId] uniqueidentifier NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    ALTER TABLE [Samples] ADD [ChamberTypeId] nvarchar(64) NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    ALTER TABLE [Samples] ADD [ConsentAtUtc] datetime2 NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    ALTER TABLE [Samples] ADD [ParentSampleId] nvarchar(64) NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    ALTER TABLE [Samples] ADD [WorkflowMode] nvarchar(32) NOT NULL DEFAULT N'';
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE TABLE [Calibrations] (
+        [CalibrationId] uniqueidentifier NOT NULL,
+        [SampleId] nvarchar(64) NOT NULL,
+        [TargetId] nvarchar(64) NOT NULL,
+        [ReferencePitchUm] float NOT NULL,
+        [MeasuredPitchPx] float NOT NULL,
+        [MicronsPerPixel] float NOT NULL,
+        [LinesDetected] int NOT NULL,
+        [SpacingCvPct] float NOT NULL,
+        [ImageWidthPx] int NOT NULL,
+        [ImageHeightPx] int NOT NULL,
+        [AssetId] uniqueidentifier NOT NULL,
+        [Status] nvarchar(32) NOT NULL,
+        [RejectReason] nvarchar(256) NULL,
+        [ToolVersion] nvarchar(32) NOT NULL,
+        [CreatedAtUtc] datetime2 NOT NULL,
+        [ExpiresAtUtc] datetime2 NULL,
+        CONSTRAINT [PK_Calibrations] PRIMARY KEY ([CalibrationId])
+    );
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE TABLE [IdempotencyKeys] (
+        [Key] nvarchar(128) NOT NULL,
+        [SampleId] nvarchar(64) NOT NULL,
+        [ResponseJson] nvarchar(max) NOT NULL,
+        [CreatedAtUtc] datetime2 NOT NULL,
+        CONSTRAINT [PK_IdempotencyKeys] PRIMARY KEY ([Key], [SampleId])
+    );
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE TABLE [InboxMessages] (
+        [MessageId] nvarchar(128) NOT NULL,
+        [ReceivedAtUtc] datetime2 NOT NULL,
+        [RaisedAtUtc] datetime2 NULL,
+        CONSTRAINT [PK_InboxMessages] PRIMARY KEY ([MessageId])
+    );
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE TABLE [MediaAssets] (
+        [AssetId] uniqueidentifier NOT NULL,
+        [SampleId] nvarchar(64) NOT NULL,
+        [Kind] nvarchar(32) NOT NULL,
+        [Container] nvarchar(64) NOT NULL,
+        [BlobName] nvarchar(256) NOT NULL,
+        [ContentTypeDeclared] nvarchar(128) NOT NULL,
+        [ContentTypeSniffed] nvarchar(128) NULL,
+        [SizeBytes] bigint NOT NULL,
+        [Sha256] nvarchar(64) NULL,
+        [Status] nvarchar(32) NOT NULL,
+        [RejectReason] nvarchar(256) NULL,
+        [Fps] float NULL,
+        [WidthPx] int NULL,
+        [HeightPx] int NULL,
+        [Codec] nvarchar(32) NULL,
+        [DurationS] float NULL,
+        [CreatedAtUtc] datetime2 NOT NULL,
+        CONSTRAINT [PK_MediaAssets] PRIMARY KEY ([AssetId])
+    );
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE TABLE [OutboxMessages] (
+        [Id] uniqueidentifier NOT NULL,
+        [Type] nvarchar(128) NOT NULL,
+        [PayloadJson] nvarchar(max) NOT NULL,
+        [CreatedAtUtc] datetime2 NOT NULL,
+        [DispatchedAtUtc] datetime2 NULL,
+        [Attempts] int NOT NULL,
+        [LastError] nvarchar(max) NULL,
+        CONSTRAINT [PK_OutboxMessages] PRIMARY KEY ([Id])
+    );
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE INDEX [IX_Samples_CalibrationId] ON [Samples] ([CalibrationId]);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE INDEX [IX_Calibrations_AssetId] ON [Calibrations] ([AssetId]);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE INDEX [IX_Calibrations_SampleId] ON [Calibrations] ([SampleId]);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE INDEX [IX_MediaAssets_BlobName] ON [MediaAssets] ([BlobName]);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE INDEX [IX_MediaAssets_SampleId] ON [MediaAssets] ([SampleId]);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    CREATE INDEX [IX_OutboxMessages_DispatchedAtUtc] ON [OutboxMessages] ([DispatchedAtUtc]);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    ALTER TABLE [Samples] ADD CONSTRAINT [FK_Samples_Calibrations_CalibrationId] FOREIGN KEY ([CalibrationId]) REFERENCES [Calibrations] ([CalibrationId]);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261123191832_Phase1_Foundation'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20261123191832_Phase1_Foundation', N'8.0.8');
+END;
+GO
+
+COMMIT;
+GO
+

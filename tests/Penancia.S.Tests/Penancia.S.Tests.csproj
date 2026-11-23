@@ -15,6 +15,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Penancia.S.Domain\Penancia.S.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Penancia.S.Data\Penancia.S.Data.csproj" />
   </ItemGroup>
 
 </Project>

@@ -376,6 +376,50 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0012 — Step 1.1: Database entities and Phase 1 migration
+
+- **Date (UTC):** 2026-11-23T19:20:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 1 / Step 1.1
+- **Issue IDs:** ISS-001, ISS-002, ISS-015, ISS-016
+- **Type:** Added
+- **Summary:**
+  1. **Authoritative Migration Source Decision:** Decided that `src/Penancia.S.Data/Migrations/` (EF Core C# code-first migration classes and snapshot) is authoritative for entity schemas and migration history. `migrations.sql` is a generated, idempotent SQL script synchronized from `dotnet ef migrations script`.
+  2. **Entities added:** Added `CalibrationEntity`, `MediaAssetEntity`, `OutboxMessageEntity`, `InboxMessageEntity`, and `IdempotencyKeyEntity` with composite key `(Key, SampleId)` in `PenanciaDbContext`.
+  3. **SampleEntity updated:** Added `CalibrationId`, `WorkflowMode` (default `"prescreen"`), `ParentSampleId`, `ChamberTypeId`, `ConsentAtUtc`. Converted `MicronsPerPixel`, `FramesPerSecond`, `ChamberDepthMicrons` to nullable `double?` to eliminate false placeholder zeros.
+  4. **EF Core Migration created:** Generated `20261123191832_Phase1_Foundation` and appended the idempotent SQL script to `migrations.sql`.
+  5. **Verification & Known Gaps:** Added `Phase1DatabaseModelTests` verifying keys, indexes, and nullability. Verified mutation failure when `WorkflowMode` nullability was toggled. Note: Docker is not installed on this host (`docker: command not found`) and port 1433 has no active SQL Server listener; therefore, per instructions, real SQL Server execution could not be run and this verification item is marked INCOMPLETE rather than falsely claiming execution.
+- **Why:** Establish schema support for optical calibration, immutable media asset tracking, outbox dispatching, and idempotent operations without invented numbers.
+- **Files changed:**
+  - `src/Penancia.S.Data/Entities/CalibrationEntity.cs` — new
+  - `src/Penancia.S.Data/Entities/MediaAssetEntity.cs` — new
+  - `src/Penancia.S.Data/Entities/OutboxMessageEntity.cs` — new
+  - `src/Penancia.S.Data/Entities/InboxMessageEntity.cs` — new
+  - `src/Penancia.S.Data/Entities/IdempotencyKeyEntity.cs` — new
+  - `src/Penancia.S.Data/Entities/SampleEntity.cs` — added phase 1 fields and nullable calibration metrics
+  - `src/Penancia.S.Data/PenanciaDbContext.cs` — added DbSets, keys, and indexes
+  - `src/Penancia.S.Data/Migrations/20261123191832_Phase1_Foundation.cs` — migration
+  - `src/Penancia.S.Data/Migrations/PenanciaDbContextModelSnapshot.cs` — snapshot update
+  - `migrations.sql` — appended Phase 1 idempotent migration script
+  - `tests/Penancia.S.Tests/Penancia.S.Tests.csproj` — added reference to Penancia.S.Data
+  - `tests/Penancia.S.Tests/Phase1DatabaseModelTests.cs` — model verification tests
+  - `.gitignore` — ignore .nuget/ and .kilo/
+  - `CHANGELOG.md` — added CL-0012
+- **Behaviour before → after:** EF Core model contains all tables for Phase 1; sample calibration properties are nullable; migration script generated.
+- **Contract / schema / API changes:** New tables `Calibrations`, `MediaAssets`, `OutboxMessages`, `InboxMessages`, `IdempotencyKeys`; `Samples` table altered.
+- **Database migration:** `20261123191832_Phase1_Foundation`
+- **Config / env / infra changes:** None
+- **Tests run:**
+  - `dotnet build -c Release` → 0 warnings, 0 errors
+  - `dotnet test tests/Penancia.S.Tests -c Release --no-restore` → 172 passed, 0 failed
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed
+- **Known gaps / risks:** Real SQL Server container could not be started locally due to missing Docker environment; SQL script application against a live server is marked INCOMPLETE.
+- **Rollback:** Remove migration files and revert entity changes.
+- **Follow-ups for the next developer or model:** Step 1.2 catalog entries backed by manufacturer datasheets.
+- **Commit(s):** pending for this CL-0012 entry
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did
