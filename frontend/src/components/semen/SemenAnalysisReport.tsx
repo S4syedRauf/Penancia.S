@@ -27,6 +27,8 @@ function ReportSection({ title, children }: { title: string; children: ReactNode
 
 export function SemenAnalysisReport({ report, candidateDetected }: SemenAnalysisReportProps) {
   const isAr = report.language === 'ar';
+  // Only show heuristic morphology fields if they contain actual measurements
+  const showHeuristic = report.candidate.morphology !== (isAr ? 'غير متاح في هذا الوضع' : 'Not available in this mode');
   return (
     <article aria-labelledby="semen-report-title" className="overflow-hidden rounded-2xl border border-slate-200 bg-white text-left shadow-sm">
       <header className="bg-[#102d3d] p-5 text-white sm:p-7">
@@ -75,10 +77,14 @@ export function SemenAnalysisReport({ report, candidateDetected }: SemenAnalysis
         <div className="grid gap-6 md:grid-cols-2">
           <ReportSection title={isAr ? 'قياسات البنية المحددة' : 'Measured structure'}>
             <DetailRow label={isAr ? 'الفئة الشكلية المبدئية' : 'Preliminary shape category'} value={report.candidate.morphology} />
-            <DetailRow label={isAr ? 'الطول التقديري' : 'Estimated head length'} value={report.candidate.headLength} />
-            <DetailRow label={isAr ? 'العرض التقديري' : 'Estimated head width'} value={report.candidate.headWidth} />
-            <DetailRow label={isAr ? 'نسبة الطول للعرض' : 'Length / width'} value={report.candidate.lengthToWidthRatio} />
-            <DetailRow label={isAr ? 'الأكروسوم التقديري' : 'Estimated acrosome'} value={report.candidate.acrosomeCoverage} />
+            {showHeuristic && (
+              <>
+                <DetailRow label={isAr ? 'الطول التقديري' : 'Estimated head length'} value={report.candidate.headLength} />
+                <DetailRow label={isAr ? 'العرض التقديري' : 'Estimated head width'} value={report.candidate.headWidth} />
+                <DetailRow label={isAr ? 'نسبة الطول للعرض' : 'Length / width'} value={report.candidate.lengthToWidthRatio} />
+                <DetailRow label={isAr ? 'الأكروسوم التقديري' : 'Estimated acrosome'} value={report.candidate.acrosomeCoverage} />
+              </>
+            )}
           </ReportSection>
           <ReportSection title={isAr ? 'قياسات غير متاحة من هذه الصورة' : 'Not available from this image'}>
             <DetailRow label={isAr ? 'التركيز' : 'Sperm concentration'} value={report.notAssessed.concentration} />

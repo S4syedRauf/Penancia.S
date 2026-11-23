@@ -39,9 +39,17 @@ export function generateSemenReportHtml(report: SemenReport): string {
   const sourceRows = row(labels.file, report.source.fileName) + row(labels.source, report.source.kind);
   const captureRows = row(labels.dimensions, report.capture.dimensions) + row(labels.focus, report.capture.focusVariance)
     + row(labels.dark, report.capture.darkClipping) + row(labels.bright, report.capture.brightClipping);
-  const candidateRows = row(labels.morphology, report.candidate.morphology) + row(labels.length, report.candidate.headLength)
-    + row(labels.width, report.candidate.headWidth) + row(labels.ratio, report.candidate.lengthToWidthRatio)
-    + row(labels.acrosome, report.candidate.acrosomeCoverage);
+  
+  // Only show heuristic morphology fields if they contain actual measurements (not "Not measured")
+  const notMeasuredAr = 'لم يُقس';
+  const notMeasuredEn = 'Not measured';
+  const showHeuristic = report.candidate.morphology !== (isAr ? 'غير متاح في هذا الوضع' : 'Not available in this mode');
+  const candidateRows = showHeuristic
+    ? row(labels.morphology, report.candidate.morphology) + row(labels.length, report.candidate.headLength)
+      + row(labels.width, report.candidate.headWidth) + row(labels.ratio, report.candidate.lengthToWidthRatio)
+      + row(labels.acrosome, report.candidate.acrosomeCoverage)
+    : row(labels.morphology, report.candidate.morphology);
+  
   const unavailableRows = row(labels.concentration, report.notAssessed.concentration)
     + row(labels.motility, report.notAssessed.motility) + row(labels.vitality, report.notAssessed.vitality)
     + row(labels.full, report.notAssessed.fullSemenAnalysis);

@@ -165,7 +165,7 @@ resource functionStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Service Bus Namespace & 12 Model Job Queues
+// 5. Service Bus Namespace: 11 Job Queues + model-results
 //    Standard tier: supports dead-lettering and duplicate detection.
 //    maxDeliveryCount=5 gives 5 retries before poison-queue.
 //    Queue names match DispatchModelJobActivity (`job-{service}`) and the

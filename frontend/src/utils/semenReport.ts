@@ -1,5 +1,6 @@
 import type { Language, SemenSessionRun } from '../types/panacea';
 import type { ImageAnalysisResult } from './spermImageAnalyzer';
+import { ENABLE_HEURISTIC_MORPHOLOGY, DEMO_MODE } from '../config';
 
 export interface SemenReport {
   language: Language;
@@ -44,13 +45,15 @@ const notMeasured = (language: Language) => language === 'ar' ? 'لم يُقس' 
 const notAssessed = (language: Language) => language === 'ar' ? 'لم يُقيّم' : 'Not assessed';
 const format = (value: number, digits = 2) => Number.isFinite(value) ? value.toFixed(digits) : '—';
 
+const SHOW_HEURISTIC = ENABLE_HEURISTIC_MORPHOLOGY || DEMO_MODE;
+
 export function buildSemenReport(
   run: SemenSessionRun,
   analysis: ImageAnalysisResult,
   language: Language,
 ): SemenReport {
   const isAr = language === 'ar';
-  const hasCandidate = analysis.cellDetected;
+  const hasCandidate = analysis.cellDetected && SHOW_HEURISTIC;
   const fileName = run.sampleMeta.sampleName || (isAr ? 'ملف مرفوع' : 'Uploaded media');
   const status = hasCandidate
     ? (isAr ? 'تم رصد بنية واحدة شبيهة بالخلية' : 'One cell-like structure detected')
@@ -71,7 +74,7 @@ export function buildSemenReport(
     },
     candidate: {
       status,
-      morphology: hasCandidate ? analysis.morphologyCategory : (isAr ? 'لا يمكن تقييمه' : 'Not assessable'),
+      morphology: hasCandidate ? analysis.morphologyCategory : (isAr ? 'غير متاح في هذا الوضع' : 'Not available in this mode'),
       headLength: hasCandidate ? `${format(analysis.headLengthUm)} µm` : notMeasured(language),
       headWidth: hasCandidate ? `${format(analysis.headWidthUm)} µm` : notMeasured(language),
       lengthToWidthRatio: hasCandidate ? format(analysis.lengthToWidthRatio) : notMeasured(language),
@@ -83,8 +86,8 @@ export function buildSemenReport(
       darkClipping: `${format(analysis.clippedDarkPct)}%`,
       brightClipping: `${format(analysis.clippedBrightPct)}%`,
       calibration: isAr
-        ? '0.05 ميكرومتر/بكسل (قيمة مفترضة؛ لم يتم التحقق منها بميكرومتر)'
-        : '0.05 µm/px (assumed; not independently verified with a micrometer)',
+        ? 'المعايرة غير مطبقة — القياسات تتطلب معايرة ميكرومتر'
+        : 'Calibration not applied — measurements require micrometer calibration',
     },
     notAssessed: {
       concentration: notAssessed(language),
@@ -97,13 +100,13 @@ export function buildSemenReport(
         ? `تم قياس أكبر بنية أمامية في هذه الصورة. التصنيف الشكلي المبدئي هو ${analysis.morphologyCategory}. هذا وصف آلي لبنية واحدة وليس تصنيفاً سريرياً للحيوانات المنوية.`
         : `The largest segmented foreground structure in this image was measured. Its preliminary shape category is ${analysis.morphologyCategory}. This is an automated description of one structure, not a clinical sperm classification.`)
       : (isAr
-        ? 'لم يعثر المسار الآلي على بنية مؤهلة في هذا الإطار. لا يعني ذلك عدم وجود حيوانات منوية في العينة؛ قد تكون الصورة غير مناسبة أو الخلايا خارج مجال التصوير.'
-        : 'The automated pass did not find an eligible structure in this frame. This does not mean sperm are absent from the sample; the image may be unsuitable or cells may be outside the captured field.'),
+        ? 'فحص جودة الصورة اكتمل. القياسات الخلوية غير مقاسة في هذا الفحص التمهيدي.'
+        : 'Image quality gate passed. Cell morphology and cellular dimensions are not reported in this preliminary pre-screen.'),
     limitations: [
       isAr ? 'إطار واحد فقط؛ لم يتم إجراء عدّ منهجي عبر حقول متعددة.' : 'Single-frame analysis only; no systematic count across multiple fields was performed.',
       isAr ? 'لا يمكن قياس التركيز أو الحركة أو الحيوية من هذا الفحص.' : 'Concentration, motility, and vitality cannot be measured by this screening pass.',
       isAr ? 'الأبعاد تقريبية وتعتمد على معايرة بصرية صحيحة.' : 'Dimensions are estimates and depend on correct optical calibration.',
-      isAr ? 'فئات الشكل والأكروسوم تقديرات هندسية ولونية غير معتمدة سريرياً.' : 'Shape and acrosome categories are unvalidated geometry/color estimates, not clinical findings.',
+      isAr ? 'فئات الشكل تقديرات هندسية ولونية غير معتمدة سريرياً.' : 'Shape categories are unvalidated geometry/color estimates, not clinical findings.',
     ],
     nextStep: isAr
       ? 'للحصول على نتيجة سريرية، احجز تحليل سائل منوي معتمداً لدى مختبر مرخص.'

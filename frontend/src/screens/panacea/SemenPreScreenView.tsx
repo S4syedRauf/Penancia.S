@@ -41,7 +41,7 @@ import { analyzeSpermImage, computeFileSha256, extractFrameFromVideo } from '../
 import type { ImageAnalysisResult } from '../../utils/spermImageAnalyzer';
 import { SemenAnalysisReport } from '../../components/semen/SemenAnalysisReport';
 import { buildSemenReport, downloadSemenReport, printSemenReport } from '../../utils/semenReport';
-import { apiUrl, BACKEND_ENABLED } from '../../config';
+import { apiUrl, BACKEND_ENABLED, ENABLE_HEURISTIC_MORPHOLOGY, DEMO_MODE } from '../../config';
 import { penanciaApi } from '../../services/penanciaApiClient';
 
 interface SemenPreScreenViewProps {
@@ -195,37 +195,87 @@ export const SemenPreScreenView: React.FC<SemenPreScreenViewProps> = ({
     setActiveStepIndex(0);
     setLiveLogs([]);
 
-    try {
-      let analysisResult: ImageAnalysisResult;
-      let sampleId: string | undefined;
+try {
+        let analysisResult: ImageAnalysisResult;
+        let sampleId: string | undefined;
 
-      if (uploadedFile) {
-        analysisResult = await analyzeSpermImage(uploadedFile, 0.05);
-      } else {
-        // Explicit Golden Fixture Reference Preset
-        const golden = GOLDEN_RESEARCH_CLIPS.find((g) => g.id === selectedGoldenId) || GOLDEN_RESEARCH_CLIPS[0];
-        const clip = golden.clips[0];
-        // Build a complete ImageAnalysisResult for golden fixtures using clip data + synthetic analysis
-        const hasSperm = clip.syntheticSeed?.noSperm !== true;
-        analysisResult = {
-          width: clip.width,
-          height: clip.height,
-          sha256: clip.sha256,
-          focusVariance: clip.focusVariance,
-          clippedDarkPct: clip.clippedDarkPct,
-          clippedBrightPct: clip.clippedBrightPct,
-          cellDetected: hasSperm,
-          morphologyCategory: hasSperm ? 'Normal' as const : 'Unclassified' as const,
-          acrosomeCoveragePct: hasSperm ? 48.5 : 0,
-          headLengthUm: hasSperm ? 4.5 : 0,
-          headWidthUm: hasSperm ? 2.8 : 0,
-          lengthToWidthRatio: hasSperm ? 1.61 : 0,
-          midpieceDefect: null,
-          tailDefect: null,
-          tziScore: null,
-          stageLogs: [],
-        };
-      }
+        if (uploadedFile && ENABLE_HEURISTIC_MORPHOLOGY) {
+          analysisResult = await analyzeSpermImage(uploadedFile, 0.05);
+        } else if (uploadedFile) {
+          // ISS-011: Heuristic morphology disabled — create minimal analysis result
+          // without heuristic morphology fields (TZI, acrosome, L/W ratio, shape category)
+          const { computeFileSha256 } = await import('../../utils/spermImageAnalyzer');
+          const sha256 = await computeFileSha256(uploadedFile);
+          analysisResult = {
+            width: 0,
+            height: 0,
+            sha256,
+            focusVariance: 0,
+            clippedDarkPct: 0,
+            clippedBrightPct: 0,
+            cellDetected: false,
+            morphologyCategory: 'NotMeasured' as const,
+            acrosomeCoveragePct: 0,
+            headLengthUm: 0,
+            headWidthUm: 0,
+            lengthToWidthRatio: 0,
+            midpieceDefect: null,
+            tailDefect: null,
+            tziScore: null,
+            stageLogs: [],
+            annotatedPreviewDataUrl: '',
+          };
+        } else {
+          // Explicit Golden Fixture Reference Preset — only available in DEMO_MODE
+          if (!DEMO_MODE) {
+            throw new Error('Golden fixture reference presets are only available in DEMO_MODE. Set VITE_DEMO_MODE=true to enable.');
+          }
+          const golden = GOLDEN_RESEARCH_CLIPS.find((g) => g.id === selectedGoldenId) || GOLDEN_RESEARCH_CLIPS[0];
+          const clip = golden.clips[0];
+          // Build a complete ImageAnalysisResult for golden fixtures using clip data + synthetic analysis
+          const hasSperm = clip.syntheticSeed?.noSperm !== true;
+          if (ENABLE_HEURISTIC_MORPHOLOGY) {
+            analysisResult = {
+              width: clip.width,
+              height: clip.height,
+              sha256: clip.sha256,
+              focusVariance: clip.focusVariance,
+              clippedDarkPct: clip.clippedDarkPct,
+              clippedBrightPct: clip.clippedBrightPct,
+              cellDetected: hasSperm,
+              morphologyCategory: hasSperm ? 'Normal' as const : 'Unclassified' as const,
+              acrosomeCoveragePct: hasSperm ? 48.5 : 0,
+              headLengthUm: hasSperm ? 4.5 : 0,
+              headWidthUm: hasSperm ? 2.8 : 0,
+              lengthToWidthRatio: hasSperm ? 1.61 : 0,
+              midpieceDefect: null,
+              tailDefect: null,
+              tziScore: null,
+              stageLogs: [],
+            };
+          } else {
+            // ISS-011: Heuristic morphology disabled
+            analysisResult = {
+              width: clip.width,
+              height: clip.height,
+              sha256: clip.sha256,
+              focusVariance: clip.focusVariance,
+              clippedDarkPct: clip.clippedDarkPct,
+              clippedBrightPct: clip.clippedBrightPct,
+              cellDetected: false,
+              morphologyCategory: 'NotMeasured' as const,
+              acrosomeCoveragePct: 0,
+              headLengthUm: 0,
+              headWidthUm: 0,
+              lengthToWidthRatio: 0,
+              midpieceDefect: null,
+              tailDefect: null,
+              tziScore: null,
+              stageLogs: [],
+              annotatedPreviewDataUrl: '',
+            };
+          }
+        }
 
       setLatestAnalysis(analysisResult);
 
@@ -243,12 +293,17 @@ export const SemenPreScreenView: React.FC<SemenPreScreenViewProps> = ({
             sampleName,
             micronsPerPixel: 0.05,
             mediaType: isVideo ? 'video' : 'image',
-            metadata: {
-              sha256: analysisResult.sha256,
-              morphology: analysisResult.morphologyCategory,
-              focusVariance: analysisResult.focusVariance,
-              tzi: analysisResult.tziScore,
-            },
+            metadata: ENABLE_HEURISTIC_MORPHOLOGY
+              ? {
+                  sha256: analysisResult.sha256,
+                  morphology: analysisResult.morphologyCategory,
+                  focusVariance: analysisResult.focusVariance,
+                  tzi: analysisResult.tziScore,
+                }
+              : {
+                  sha256: analysisResult.sha256,
+                  focusVariance: analysisResult.focusVariance,
+                },
           });
           sampleId = sampleResponse.sampleId;
 
@@ -352,6 +407,7 @@ export const SemenPreScreenView: React.FC<SemenPreScreenViewProps> = ({
       // Prefer server pipeline results when available (full S0-S13 gate validation)
       const nowIso = new Date().toISOString();
       const isDemo = !uploadedFile;
+      const isDemoMode = isDemo && DEMO_MODE;
       const sampleName = uploadedFile ? uploadedFile.name : `Golden Reference (${selectedGoldenId})`;
 
       const sessionRun: SemenSessionRun = serverSession
@@ -369,33 +425,48 @@ export const SemenPreScreenView: React.FC<SemenPreScreenViewProps> = ({
               completeness,
               sampleName,
             },
-            isDemo,
-            demoAttribution: isDemo ? 'Golden Research Reference Fixture' : 'User Micrograph Capture',
-            modelVersion: 'connected-component-image-heuristic-v2.0',
+            isDemo: isDemoMode,
+            demoAttribution: isDemoMode ? 'Golden Research Reference Fixture (DEMO)' : 'User Micrograph Capture',
+            modelVersion: ENABLE_HEURISTIC_MORPHOLOGY
+              ? 'connected-component-image-heuristic-v2.0'
+              : 'local-quality-gate-only-v1.0',
             pipelineVersion: 'image-derived-report-v2.0',
             validationMode: 'research_only',
             state: 'Completed',
-            qualitySummaryEn: analysisResult.cellDetected
+            qualitySummaryEn: ENABLE_HEURISTIC_MORPHOLOGY && analysisResult.cellDetected
               ? `One cell-like foreground structure was measured. Preliminary shape category: ${analysisResult.morphologyCategory}. This is not a clinical sperm classification.`
-              : 'No eligible cell-like structure was detected in this frame. This does not establish that sperm are absent from the sample.',
-            qualitySummaryAr: analysisResult.cellDetected
+              : 'Image quality gate passed. Morphology, TZI, acrosome, and head ratio are not measured by this pre-screen.',
+            qualitySummaryAr: ENABLE_HEURISTIC_MORPHOLOGY && analysisResult.cellDetected
               ? `تم قياس بنية واحدة شبيهة بالخلية. الفئة الشكلية المبدئية: ${analysisResult.morphologyCategory}. هذا ليس تصنيفاً سريرياً للحيوانات المنوية.`
-              : 'لم يتم رصد بنية مؤهلة في هذا الإطار. لا يثبت ذلك عدم وجود حيوانات منوية في العينة.',
+              : 'تم اجتياز بوابة جودة الصورة. الشكل، TZI، الأكروسوم، ونسبة الرأس لم تُقاس في هذا الفحص التمهيدي.',
             researchOnlyBandConc: 'Unclear',
             researchOnlyBandMotility: 'Unclear',
             noSpermSeen: false,
-            usedItems: [
-              `Media Capture: ${sampleName} (${analysisResult.width}x${analysisResult.height} px)`,
-              `Laplacian Focus Variance: ${analysisResult.focusVariance}`,
-              `Preliminary shape category: ${analysisResult.morphologyCategory}`,
-              `Abstinence: ${abstinenceDays} days (${completeness})`,
-            ],
-            couldNotUseItems: [
-              'Concentration: Not assessed from a single frame',
-              'Motility: Not assessed without temporal tracking',
-              'Vitality: Not assessed without a validated vitality assay',
-              'Midpiece, tail and TZI: Not assessed by this heuristic',
-            ],
+            usedItems: ENABLE_HEURISTIC_MORPHOLOGY
+              ? [
+                  `Media Capture: ${sampleName} (${analysisResult.width}x${analysisResult.height} px)`,
+                  `Laplacian Focus Variance: ${analysisResult.focusVariance}`,
+                  `Preliminary shape category: ${analysisResult.morphologyCategory}`,
+                  `Abstinence: ${abstinenceDays} days (${completeness})`,
+                ]
+              : [
+                  `Media Capture: ${sampleName} (${analysisResult.width}x${analysisResult.height} px)`,
+                  `Laplacian Focus Variance: ${analysisResult.focusVariance}`,
+                  `Abstinence: ${abstinenceDays} days (${completeness})`,
+                ],
+            couldNotUseItems: ENABLE_HEURISTIC_MORPHOLOGY
+              ? [
+                  'Concentration: Not assessed from a single frame',
+                  'Motility: Not assessed without temporal tracking',
+                  'Vitality: Not assessed without a validated vitality assay',
+                  'Midpiece, tail and TZI: Not assessed by this heuristic',
+                ]
+              : [
+                  'Concentration: Not assessed from a single frame',
+                  'Motility: Not assessed without temporal tracking',
+                  'Vitality: Not assessed without a validated vitality assay',
+                  'Morphology (shape, acrosome, L/W ratio, TZI): Not measured by this pre-screen',
+                ],
             stageLogs: accumulatedLogs,
             createdAt: nowIso,
           };

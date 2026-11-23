@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
+import { DEMO_MODE } from './src/config.js';
 import {
   CONSENT_DEFINITIONS,
   DUBAI_PARTNER_SITES,
@@ -31,13 +32,8 @@ import {
   resetStore,
   saveStore,
 } from './src/server/persistenceStore.ts';
-import {
-  assertNoPipelineNumericLeakage,
-  extractReportOnServer,
-  runSemenPipelineS0ToS13,
-  SEMEN_GATE_CONFIG,
-} from './src/server/pipelineEngine.ts';
-import { recordImageDerivedSemenSession } from './src/server/semenSessionStore.ts';
+import { extractReportOnServer } from './src/server/pipelineEngine.ts';
+import { registerSemenDemoRoutes } from './src/server/semenDemoRoutes.js';
 import { requireAuthentication } from './src/server/auth.ts';
 import type { ConsentKey, PlanActionStatus, QuestionnaireResponseRow, SemenSessionRun, VaultReport } from './src/types/panacea.ts';
 
@@ -46,7 +42,7 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 3000);
 
-async function startServer() {
+export function createApp(): express.Express {
   const app = express();
   app.disable('x-powered-by');
   app.use((_req, res, next) => {
@@ -637,114 +633,12 @@ async function startServer() {
     res.json({ reports: store.reports });
   });
 
-  // Home Semen Pre-Screen (Research Mode, Calibration & S0-S13)
-  app.get('/v1/config/semen-gate', (_req, res) => {
-    res.json(SEMEN_GATE_CONFIG);
-  });
-
-  app.post('/v1/semen/calibration', (req, res) => {
-    const store = loadStore();
-    const { detectedLinesCount = 10, spacingVariancePct = 1.4, fieldWidthUm = 420 } = req.body || {};
-    if (detectedLinesCount < 8 || spacingVariancePct > 3.0) {
-      appendAuditAndOutbox(store, {
-        actorType: 'pipeline',
-        action: 'SEMEN_CALIBRATION_FAILED',
-        target: 'micrometer_ruler',
-      });
-      saveStore(store);
-      return res.json({
-        ok: false,
-        messageEn: 'Calibration failed: fewer than 8 even ruler lines within 3% tolerance.',
-        messageAr: 'فشلت المعايرة: لم يتم رصد ٨ خطوط متساوية بنسبة تفاوت أقل من ٣٪.',
-      });
-    }
-    const umPerPx = Number((fieldWidthUm / 1920).toFixed(4));
-    appendAuditAndOutbox(store, {
-      actorType: 'pipeline',
-      action: 'SEMEN_CALIBRATION_PASSED',
-      target: 'micrometer_ruler',
-    });
-    saveStore(store);
-    res.json({
-      ok: true,
-      umPerPx,
-      linesDetected: detectedLinesCount,
-      spacingVariancePct,
-      calibratedAt: new Date().toISOString(),
-    });
-  });
-
-  app.post('/v1/semen/sessions', (req, res) => {
-    const store = loadStore();
-    try {
-      const session = recordImageDerivedSemenSession(store, req.body as SemenSessionRun);
-      appendAuditAndOutbox(store, {
-        actorType: 'pipeline',
-        action: 'SEMEN_IMAGE_SESSION_SAVED',
-        target: session.sessionId,
-      });
-      saveStore(store);
-      res.status(201).json({ session, semenSessions: store.semenSessions });
-    } catch (err) {
-      const code = err instanceof Error ? err.message : 'INVALID_IMAGE_SESSION';
-      const status = code === 'CONSENT_REQUIRED' ? 403 : code === 'KILL_SWITCH_ACTIVE' ? 409 : 400;
-      res.status(status).json({
-        code,
-        message_en:
-          code === 'CONSENT_REQUIRED'
-            ? 'Semen media consent is required before saving this analysis.'
-            : code === 'KILL_SWITCH_ACTIVE'
-              ? 'The research kill switch is active. This analysis was not saved.'
-              : 'The image-derived research session is invalid and was not saved.',
-        message_ar:
-          code === 'CONSENT_REQUIRED'
-            ? 'يجب تفعيل إذن معالجة الوسائط قبل حفظ هذا التحليل.'
-            : code === 'KILL_SWITCH_ACTIVE'
-              ? 'مفتاح إيقاف البحث مفعّل. لم يتم حفظ هذا التحليل.'
-              : 'جلسة تحليل الصورة غير صالحة ولم يتم حفظها.',
-        retry: false,
-      });
-    }
-  });
-
-  app.post('/v1/semen/analyze', (req, res) => {
-    const store = loadStore();
-    try {
-      const result = runSemenPipelineS0ToS13({
-        ...req.body,
-        userId: store.user.userId,
-        consentSemenMedia: Boolean(store.consents.semen_media?.state),
-        killSwitchActive: Boolean(store.featureFlags.homeResearchKillSwitch),
-      });
-      assertNoPipelineNumericLeakage({
-        qualitySummaryEn: result.qualitySummaryEn,
-        qualitySummaryAr: result.qualitySummaryAr,
-      });
-      store.semenSessions.unshift(result);
-      if (store.semenSessions.length > 20) store.semenSessions.length = 20;
-
-      appendAuditAndOutbox(store, {
-        actorType: 'pipeline',
-        action: `SEMEN_RESEARCH_${result.state.toUpperCase()}`,
-        target: result.sessionId,
-      });
-      saveStore(store);
-      res.json({ session: result, semenSessions: store.semenSessions });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'PIPELINE_ERROR';
-      appendAuditAndOutbox(store, {
-        actorType: 'pipeline',
-        action: 'SEMEN_PIPELINE_SAFE_FALLBACK',
-        target: msg,
-      });
-      saveStore(store);
-      res.status(500).json({
-        code: msg,
-        message_en: 'Could not complete research pipeline safely. Fallback triggered.',
-        message_ar: 'تعذر إكمال المسار البحثي بأمان. تم تفعيل المسار الاحتياطي.',
-        retry: true,
-      });
-    }
+  // Home Semen Pre-Screen (Research Mode, Calibration & S0-S13) — DEMO_MODE gate
+  registerSemenDemoRoutes(app, {
+    demoMode: DEMO_MODE,
+    loadStore,
+    saveStore,
+    appendAuditAndOutbox,
   });
 
   // Flexible Habit Plan Action Updates
@@ -936,6 +830,12 @@ async function startServer() {
     res.json({ events: store.auditEvents, outbox: store.outboxMessages });
   });
 
+  return app;
+}
+
+export async function startServer() {
+  const app = createApp();
+
   // Vite dev middleware or static dist
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -956,4 +856,12 @@ async function startServer() {
   });
 }
 
-startServer();
+const isMainModule = process.argv[1] && (
+  fileURLToPath(import.meta.url) === path.resolve(process.argv[1]) ||
+  process.argv[1].endsWith('server.ts') ||
+  process.argv[1].endsWith('server.js')
+);
+
+if (isMainModule) {
+  startServer();
+}

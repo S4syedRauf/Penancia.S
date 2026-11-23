@@ -25,6 +25,7 @@ import {
   SemenSessionRun,
   SemenSetupType,
 } from '../../types/sahatna';
+import { DEMO_MODE } from '../../config';
 
 const DEMO_SAMPLES: Array<{
   id: string;
@@ -269,6 +270,17 @@ export const SemenPreScreenFlow: React.FC = () => {
         fieldWidthUm: selectedKit.fieldWidthUmDefault,
       }),
     });
+    
+    if (res.status === 404) {
+      const errorData = await res.json();
+      const notAvailableMsg = isAr
+        ? 'خدمة المعايرة غير متاحة في الإنتاج حالياً.'
+        : 'Calibration service is not available in production yet.';
+      setCalibrationStatus('failed');
+      setCalibrationMsg(notAvailableMsg);
+      return;
+    }
+    
     const data = await res.json();
     if (!data.ok) {
       setCalibrationStatus('failed');
@@ -382,6 +394,54 @@ export const SemenPreScreenFlow: React.FC = () => {
         previousUnclearOrLowCount: prevUnclearOrLow,
       }),
     });
+    
+    if (res.status === 404) {
+      setPipelineRunning(false);
+      const errorData = await res.json();
+      // Show clear "not available yet" message
+      const notAvailableMsg = isAr
+        ? 'خدمة الفحص المنزلي غير متاحة في الإنتاج حالياً. يرجى استخدام حجز المختبر أو الانتظار حتى تفعيل الخدمة.'
+        : 'Home pre-screen service is not available in production yet. Please use lab booking or wait for service activation.';
+      // Store the error message in a way the UI can display it
+      const errorRun: SemenSessionRun = {
+        sessionId: `ses_${Date.now()}`,
+        runId: `run_${Date.now()}`,
+        userId: state.user.userId,
+        setupType: setupChoice === 'neither' ? 'clip_on' : setupChoice,
+        kitProfile: selectedKit,
+        sampleMeta: {
+          abstinenceDays,
+          collectedAtIso: new Date().toISOString(),
+          temperatureNote,
+          sampleName: demoItem?.labelEn,
+        },
+        isDemo: false,
+        demoAttribution: 'Service Unavailable',
+        modelVersion: 'unavailable',
+        pipelineVersion: 'unavailable',
+        validationMode: 'prototype',
+        state: 'Rejected',
+        bandConc: 'Unclear',
+        bandMotility: 'Unclear',
+        overallColour: 'red',
+        explanationEn: notAvailableMsg,
+        explanationAr: notAvailableMsg,
+        noSpermSeen: false,
+        usedItems: [],
+        couldNotUseItems: ['Home pre-screen service unavailable in production'],
+        stageLogs: [],
+        createdAt: new Date().toISOString(),
+        concReasonEn: 'Service not deployed',
+        concReasonAr: 'الخدمة غير نشر',
+        motilityReasonEn: 'Service not deployed',
+        motilityReasonAr: 'الخدمة غير نشر',
+      };
+      addSemenRunResult(errorRun);
+      setLatestRun(errorRun);
+      setGuideStep(9);
+      return;
+    }
+    
     const runResult: SemenSessionRun = await res.json();
     setPipelineRunning(false);
     addSemenRunResult(runResult);
@@ -513,8 +573,8 @@ export const SemenPreScreenFlow: React.FC = () => {
         </div>
       )}
 
-      {/* Judge Demo Mode Bar (F16) */}
-      {state.featureFlags.demoModeEnabled && (
+      {/* Judge Demo Mode Bar (F16) — only when DEMO_MODE is enabled */}
+      {DEMO_MODE && state.featureFlags.demoModeEnabled && (
         <div className="rounded-3xl bg-[#FFF45A]/40 border border-[#E6D839] p-4 space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">

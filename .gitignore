@@ -49,3 +49,9 @@ dist/
 /.vscode/
 /Library/
 .aistudio/
+
+# Phase 0 cleanup - ignore generated/copied directories
+Manus files/
+.kilo/
+src/Penancia.S.Domain/.nuget/
+tests/Penancia.S.Tests/.nuget/
