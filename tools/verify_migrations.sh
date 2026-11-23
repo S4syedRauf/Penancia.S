@@ -64,14 +64,21 @@ echo "Using CONTAINER_ID='${CONTAINER_ID}'"
 # Wait for SQL Server to be healthy / responsive
 echo "Waiting for SQL Server to accept connections..."
 MAX_TRIES=30
+SQL_READY=false
 for i in $(seq 1 $MAX_TRIES); do
   if run_sqlcmd "" "SELECT 1" >/dev/null 2>&1; then
     echo "SQL Server is ready!"
+    SQL_READY=true
     break
   fi
   echo "Waiting ($i/$MAX_TRIES)..."
   sleep 2
 done
+
+if [ "$SQL_READY" != true ]; then
+  echo "FAIL: SQL Server did not become ready after $MAX_TRIES attempts." >&2
+  exit 1
+fi
 
 # Ensure we have git origin/main fetched
 git fetch origin main:refs/remotes/origin/main || true
@@ -83,13 +90,44 @@ echo "=== Test (a): Applying migrations.sql to empty database (db_fresh) ==="
 run_sqlcmd "" "IF DB_ID('db_fresh') IS NOT NULL DROP DATABASE db_fresh; CREATE DATABASE db_fresh;"
 run_sqlfile "db_fresh" "migrations.sql"
 
-# Check table count
-TABLE_COUNT=$(run_sqlcmd "db_fresh" "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.tables;" | tr -dc '0-9')
-echo "db_fresh table count: $TABLE_COUNT"
-if [ "$TABLE_COUNT" -lt 10 ]; then
-  echo "FAIL: Expected at least 10 tables, found $TABLE_COUNT" >&2
-  exit 1
-fi
+# Check exact 17 table names
+echo "Verifying exact 17 tables exist in db_fresh..."
+run_sqlcmd "db_fresh" "
+SET NOCOUNT ON;
+DECLARE @expectedTables TABLE (TableName sysname);
+INSERT INTO @expectedTables VALUES 
+  ('__EFMigrationsHistory'), ('Samples'), ('AuditEvents'), ('ModelRuns'),
+  ('LabOrders'), ('PartnerClinics'), ('SlotHolds'), ('DailyCheckIns'),
+  ('FollowUpTasks'), ('Questionnaires'), ('ScreeningRuns'), ('SymptomLogs'),
+  ('Calibrations'), ('IdempotencyKeys'), ('InboxMessages'), ('MediaAssets'),
+  ('OutboxMessages');
+
+DECLARE @tableCount INT;
+SELECT @tableCount = COUNT(*) FROM sys.tables;
+IF @tableCount <> 17
+BEGIN
+    RAISERROR('FAIL: Expected exactly 17 tables, found %d', 16, 1, @tableCount);
+END;
+
+IF EXISTS (
+    SELECT TableName FROM @expectedTables
+    EXCEPT
+    SELECT name FROM sys.tables
+)
+BEGIN
+    RAISERROR('FAIL: Missing expected tables in db_fresh', 16, 1);
+END;
+
+IF EXISTS (
+    SELECT name FROM sys.tables
+    EXCEPT
+    SELECT TableName FROM @expectedTables
+)
+BEGIN
+    RAISERROR('FAIL: Unexpected extra tables in db_fresh', 16, 1);
+END;
+PRINT 'All 17 exact tables verified successfully in db_fresh.';
+"
 echo "Test (a) PASSED."
 
 # ----------------------------------------------------------------------------
@@ -133,9 +171,9 @@ run_sqlcmd "db_upgrade" "
 SET NOCOUNT ON;
 DECLARE @mode nvarchar(32);
 SELECT @mode = [WorkflowMode] FROM [Samples] WHERE [SampleId] = 'test-upgrade-01';
-IF @mode <> 'prescreen'
+IF @mode IS NULL OR @mode <> 'prescreen'
 BEGIN
-    RAISERROR('Assertion failed: WorkflowMode is %s, expected prescreen', 16, 1, @mode);
+    RAISERROR('Assertion failed: WorkflowMode is NULL or not prescreen', 16, 1);
 END;
 PRINT 'WorkflowMode assertion verified: ' + @mode;
 "

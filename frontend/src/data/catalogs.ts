@@ -229,7 +229,7 @@ export const FOOD_CATALOGUE: FoodCatalogItem[] = [
 export const SEMEN_KITS: SemenKitProfile[] = [
   {
     kitId: 'kit-clip-300x-10um',
-    kitName: 'Clip-On 300x Optical Lens + 10 µm Fixed-Depth Chamber',
+    kitName: 'Clip-On 300x Optical Lens + Fixed-Depth Chamber (Standard)',
     type: 'clip_on',
     magnification: '300x',
     chamberDepthUm: null,
@@ -239,7 +239,7 @@ export const SEMEN_KITS: SemenKitProfile[] = [
   },
   {
     kitId: 'kit-clip-300x-20um',
-    kitName: 'Clip-On 300x Optical Lens + 20 µm Fixed-Depth Chamber',
+    kitName: 'Clip-On 300x Optical Lens + Fixed-Depth Chamber (Wide Field)',
     type: 'clip_on',
     magnification: '300x',
     chamberDepthUm: null,

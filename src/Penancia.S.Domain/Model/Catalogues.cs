@@ -36,20 +36,20 @@ public static class PhysicalCatalogues
         DatasheetUrl: "https://leja.nl/wp-content/uploads/2023/06/DOC-3.3-01-10-2023-04-24-Leja-slides-General-CE-User-Manual.pdf"
     );
 
-    // Datasheet: https://www.vitrolife.com/products/sperm-processing/microcell--accessories/
+    // Datasheet: https://www.vitrolife.com/globalassets/support-documents/product-manuals/microcell_user_manual-en-gb.pdf
     public static readonly ChamberType VitrolifeMicrocell20 = new(
         Id: "vitrolife-microcell-15423",
         DisplayName: "Vitrolife MicroCell REF 15423 (20 µm 2-chamber)",
         DepthUm: 20.0,
-        DatasheetUrl: "https://www.vitrolife.com/products/sperm-processing/microcell--accessories/"
+        DatasheetUrl: "https://www.vitrolife.com/globalassets/support-documents/product-manuals/microcell_user_manual-en-gb.pdf"
     );
 
-    // Datasheet: https://www.thorlabs.com/stage-micrometers
+    // Datasheet: https://www.thorlabs.com/item/R1L3S2P
     public static readonly CalibrationTarget ThorlabsR1L3S2P = new(
         Id: "thorlabs-r1l3s2p",
-        DisplayName: "Thorlabs R1L3S2P (10 µm grid pitch, 100 lines/mm)",
+        DisplayName: "1 mm scale, 10 µm divisions",
         PitchUm: 10.0,
-        DatasheetUrl: "https://www.thorlabs.com/stage-micrometers"
+        DatasheetUrl: "https://www.thorlabs.com/item/R1L3S2P"
     );
 
     public static readonly IReadOnlyDictionary<string, ChamberType> Chambers =

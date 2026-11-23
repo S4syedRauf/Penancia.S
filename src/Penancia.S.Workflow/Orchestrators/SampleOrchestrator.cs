@@ -107,9 +107,8 @@ public static class SampleOrchestrator
         try
         {
             // --- Phase 1: Malware & Format Validation ---
-            // NOTE: ValidateFilesActivity currently FAILS CLOSED (throws NotSupportedException)
-            // until the real format/duration/malware checks land (Stage S4), so no sample can
-            // pass this phase today. The isValid == false branch below is for when it lands.
+            // ValidateFilesActivity validates uploaded media and optical calibration readiness.
+            // When prerequisites fail, the sample is marked Rejected.
             bool isValid = await context.CallActivityAsync<bool>(
                 nameof(ValidateFilesActivity), sampleId, DbRetryOptions);
 

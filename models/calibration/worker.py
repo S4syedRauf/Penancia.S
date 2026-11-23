@@ -14,11 +14,22 @@ from base_worker import BaseWorker
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # ============================================================================
-# PROVISIONAL Acceptance Thresholds (WHO 2021 / CalibrationController.cs)
-# Kept as PROVISIONAL until formal clinical sign-off in Phase 10.
+# PROVISIONAL Acceptance Thresholds (CalibrationController.cs)
+# Sourced from legacy CalibrationController; marked PROVISIONAL until Phase 10.
 # ============================================================================
 MIN_LINES_PROVISIONAL: int = 6
 MAX_CV_PCT_PROVISIONAL: float = 5.0
+
+
+def get_tool_version() -> str:
+    git_sha = os.environ.get("GIT_SHA", "unknown")
+    if git_sha == "unknown":
+        try:
+            import subprocess
+            git_sha = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
+        except Exception:
+            git_sha = "dev"
+    return f"1.0.0-phase1+{git_sha} (numpy={np.__version__},scipy={scipy.__version__},opencv={cv2.__version__})"
 
 
 def estimate_ruling_angle(gray: np.ndarray) -> float:
@@ -198,6 +209,7 @@ def calibrate_ruling(
         "reference_pitch_um": float(reference_pitch_um),
         "microns_per_pixel": round(microns_per_pixel, 6) if microns_per_pixel is not None else None,
         "rotation_applied_deg": round(angle_deg, 2),
+        "tool_version": get_tool_version(),
         "thresholds_provisional": {
             "min_lines": min_lines,
             "max_cv_pct": max_cv_pct,
@@ -220,9 +232,15 @@ class CalibrationWorker(BaseWorker):
         if not image_uri:
             raise ValueError("CALIBRATION_IMAGE_MISSING: calibration_image_uri or media_blob_uri is required.")
 
-        reference_pitch_um = float(params.get("reference_pitch_um", 10.0))
+        pitch_val = params.get("reference_pitch_um")
+        if pitch_val is None:
+            raise ValueError("REFERENCE_PITCH_MISSING: reference_pitch_um parameter is required.")
+        try:
+            reference_pitch_um = float(pitch_val)
+        except (ValueError, TypeError):
+            raise ValueError(f"REFERENCE_PITCH_MISSING: invalid reference_pitch_um value: {pitch_val}")
         if reference_pitch_um <= 0:
-            raise ValueError("INVALID_REFERENCE_PITCH: reference_pitch_um must be > 0.")
+            raise ValueError("REFERENCE_PITCH_MISSING: reference_pitch_um must be > 0.")
 
         # In production: download blob from Azure Storage or read local test file
         result = calibrate_ruling(image_uri, reference_pitch_um)
@@ -230,10 +248,22 @@ class CalibrationWorker(BaseWorker):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 2:
-        img_path = sys.argv[1]
-        pitch = float(sys.argv[2])
-        out = calibrate_ruling(img_path, pitch)
-        print(json.dumps(out, indent=2))
-    else:
-        print("Usage: python worker.py <image_path> <reference_pitch_um>")
+    import argparse
+    parser = argparse.ArgumentParser(description="Penancia.S Optical Calibration Worker (CLI only until Step 4.1)")
+    parser.add_argument("image_path", nargs="?", help="Path to graticule ruling image")
+    parser.add_argument("reference_pitch_um", nargs="?", type=float, help="Known physical pitch of ruling lines in microns")
+    parser.add_argument("--out", dest="out_path", help="Path to write output result.json")
+
+    args = parser.parse_args()
+    if not args.image_path or args.reference_pitch_um is None:
+        print("Usage: python worker.py <image_path> <reference_pitch_um> [--out <path>]")
+        print("Note: CLI only until Step 4.1 Service Bus container job integration.")
+        sys.exit(0)
+
+    out = calibrate_ruling(args.image_path, args.reference_pitch_um)
+    out_json = json.dumps(out, indent=2)
+    print(out_json)
+
+    if args.out_path:
+        with open(args.out_path, "w", encoding="utf-8") as f:
+            f.write(out_json)

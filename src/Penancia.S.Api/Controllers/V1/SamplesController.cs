@@ -77,6 +77,32 @@ public class SamplesController : ControllerBase
             ? $"SMP-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid():N}"[..24]
             : request.SampleId;
 
+        if (request.MicronsPerPixel.HasValue)
+        {
+            return StatusCode(422, new
+            {
+                ok = false,
+                error = "INVENTED_CALIBRATION_REJECTED",
+                message = "Samples cannot be created with client-supplied calibration values. Calibration must be performed via /v1/semen/samples/{sampleId}/calibration."
+            });
+        }
+
+        string workflowMode = "prescreen";
+        if (!string.IsNullOrWhiteSpace(request.WorkflowMode))
+        {
+            var trimmed = request.WorkflowMode.Trim().ToLowerInvariant();
+            if (trimmed != "prescreen" && trimmed != "clinical")
+            {
+                return StatusCode(422, new
+                {
+                    ok = false,
+                    error = "INVALID_WORKFLOW_MODE",
+                    message = $"WorkflowMode must be 'prescreen' or 'clinical', but received '{request.WorkflowMode}'."
+                });
+            }
+            workflowMode = trimmed;
+        }
+
         var existing = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
         if (existing != null)
         {
@@ -114,7 +140,7 @@ public class SamplesController : ControllerBase
             CreatedAtUtc = DateTime.UtcNow,
             CreatedBy = callerId,
             State = nameof(SampleState.Draft),
-            WorkflowMode = !string.IsNullOrWhiteSpace(request.WorkflowMode) ? request.WorkflowMode : "prescreen",
+            WorkflowMode = workflowMode,
             ChamberTypeId = request.ChamberTypeId,
             ChamberDepthMicrons = chamberDepth,
             MicronsPerPixel = null,
@@ -357,37 +383,14 @@ public class SamplesController : ControllerBase
             });
         }
 
-        // Copy MicronsPerPixel from Valid Calibration when readiness is verified (Step 1.5 item 2)
-        if (sample.Calibration != null && sample.Calibration.Status == "Valid" && sample.Calibration.MicronsPerPixel.HasValue)
-        {
-            sample.MicronsPerPixel = sample.Calibration.MicronsPerPixel.Value;
-        }
-
-        // Route through the machine: Draft --Submit--> Validating,
-        // Validating --FilesValidated--> Analyzing. Any other state is fed
-        // Submit so the machine itself returns the INVALID_TRANSITION reason.
+        // Verify state machine can accept Submit event without modifying state in DB.
+        // State remains Draft so Durable Functions orchestrator can execute Submit.
         var evt = current == SampleState.Validating ? SampleEvent.FilesValidated : SampleEvent.Submit;
         var ctx = new TransitionContext(actorId, actorRole, Array.Empty<string>(),
             FilesAndCalibrationPresent: true);
-        var result = SampleStateMachine.Apply(current, evt, ctx);
-        if (!result.Success)
-            return StatusCode(409, new { error = result.FailureReason });
-
-        // Apply state transition
-        sample.State = result.NewState.ToString();
-        await _db.SaveChangesAsync();
-
-        if (_httpClients == null)
-        {
-            return Ok(new
-            {
-                ok = true,
-                sampleId = sampleId,
-                status = result.NewState.ToString(),
-                state = result.NewState.ToString(),
-                message = "Semen pre-screening pipeline triggered successfully."
-            });
-        }
+        var previewResult = SampleStateMachine.Apply(current, evt, ctx);
+        if (!previewResult.Success)
+            return StatusCode(409, new { error = previewResult.FailureReason });
 
         var workflow = _httpClients.CreateClient("workflow");
         var functionKey = _configuration["Workflow:FunctionKey"];

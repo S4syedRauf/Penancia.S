@@ -20,15 +20,18 @@ public class CalibrationController : ControllerBase
     private readonly ILogger<CalibrationController> _logger;
     private readonly PenanciaDbContext _db;
     private readonly IConfiguration _configuration;
+    private readonly Services.ICalibrationResultService? _resultService;
 
     public CalibrationController(
         ILogger<CalibrationController> logger,
         PenanciaDbContext db,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        Services.ICalibrationResultService? resultService = null)
     {
         _logger = logger;
         _db = db;
         _configuration = configuration;
+        _resultService = resultService;
     }
 
     private string CallerObjectId() =>
@@ -133,6 +136,16 @@ public class CalibrationController : ControllerBase
             return NotFound(new { ok = false, error = $"Media asset {request.AssetId} not found for sample {sampleId}." });
         }
 
+        if (!string.Equals(asset.Kind, "calibration", StringComparison.OrdinalIgnoreCase))
+        {
+            return StatusCode(422, new
+            {
+                ok = false,
+                error = "ASSET_NOT_CALIBRATION_IMAGE",
+                message = $"Asset {asset.AssetId} has kind '{asset.Kind}'; only 'calibration' assets can be used for optical calibration."
+            });
+        }
+
         if (!string.Equals(asset.Status, "Verified", StringComparison.OrdinalIgnoreCase))
         {
             return StatusCode(422, new
@@ -157,17 +170,26 @@ public class CalibrationController : ControllerBase
 
         sample.CalibrationId = calibration.CalibrationId;
 
+        var jobId = Guid.NewGuid();
         var outbox = new OutboxMessageEntity
         {
-            Id = Guid.NewGuid(),
+            Id = jobId,
             Type = "job-calibration",
             PayloadJson = System.Text.Json.JsonSerializer.Serialize(new
             {
-                calibrationId = calibration.CalibrationId,
-                sampleId = sampleId,
-                assetId = asset.AssetId,
-                targetId = target.Id,
-                referencePitchUm = target.PitchUm
+                job_id = jobId.ToString(),
+                sample_id = sampleId,
+                service = "calibration",
+                schema_version = "1.0.0",
+                inputs = new
+                {
+                    calibration_image_uri = $"{asset.Container}/{asset.BlobName}"
+                },
+                @params = new
+                {
+                    reference_pitch_um = target.PitchUm,
+                    calibration_id = calibration.CalibrationId.ToString()
+                }
             }),
             CreatedAtUtc = DateTime.UtcNow,
             Attempts = 0
@@ -284,15 +306,43 @@ public class CalibrationController : ControllerBase
         return Ok(new
         {
             ok = true,
+            demo = true,
+            status = "DEMO_NOT_MEASURED",
             scaleFactor = umPerPx,
             umPerPx = umPerPx,
             linesDetected = lines.Value,
             spacingVariancePct = variance,
             unit = "µm/px",
             calibratedAt = DateTime.UtcNow.ToString("o"),
-            messageEn = $"Micrometer Verified: {umPerPx} µm/px ({lines.Value} even lines)",
-            messageAr = $"نجحت المعايرة: {umPerPx} µm/px ({lines.Value} خطوط)"
+            messageEn = $"Demo calibration: {umPerPx} µm/px ({lines.Value} lines, not physically measured)",
+            messageAr = $"معايرة تجريبية: {umPerPx} µm/px ({lines.Value} خطوط، غير مقاسة فعلياً)"
         });
+    }
+
+    /// <summary>
+    /// Applies worker calibration measurement result to calibration record and sample.
+    /// Internal/Staff only.
+    /// </summary>
+    [HttpPost("samples/{sampleId}/calibration/{calibrationId}/result")]
+    [Authorize(Policy = "StaffOnly")]
+    public async Task<IActionResult> ApplyCalibrationResult(string sampleId, Guid calibrationId, [FromBody] Services.CalibrationResultDto result)
+    {
+        if (_resultService == null)
+            return StatusCode(500, new { ok = false, error = "CalibrationResultService not configured." });
+
+        var sample = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
+        if (sample == null)
+            return NotFound(new { ok = false, error = $"Sample {sampleId} not found." });
+
+        var cal = await _db.Calibrations.FirstOrDefaultAsync(c => c.CalibrationId == calibrationId && c.SampleId == sampleId);
+        if (cal == null)
+            return NotFound(new { ok = false, error = $"Calibration {calibrationId} not found for sample {sampleId}." });
+
+        var applyRes = await _resultService.ApplyAsync(calibrationId, result);
+        if (!applyRes.Success)
+            return StatusCode(422, new { ok = false, error = applyRes.ErrorMessage });
+
+        return Ok(new { ok = true, status = applyRes.Status });
     }
 }
 

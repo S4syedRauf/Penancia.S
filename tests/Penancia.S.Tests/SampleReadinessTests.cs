@@ -1,7 +1,9 @@
+using System.Net;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Penancia.S.Api.Controllers.V1;
 using Penancia.S.Data;
@@ -14,6 +16,34 @@ namespace Penancia.S.Tests;
 
 public class SampleReadinessTests
 {
+    private class FakeHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode _statusCode;
+        public HttpRequestMessage? LastRequest { get; private set; }
+
+        public FakeHttpMessageHandler(HttpStatusCode statusCode = HttpStatusCode.Accepted)
+        {
+            _statusCode = statusCode;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            LastRequest = request;
+            var response = new HttpResponseMessage(_statusCode);
+            return Task.FromResult(response);
+        }
+    }
+
+    private class FakeHttpClientFactory : IHttpClientFactory
+    {
+        private readonly HttpMessageHandler _handler;
+        public FakeHttpClientFactory(HttpMessageHandler handler) => _handler = handler;
+        public HttpClient CreateClient(string name) => new HttpClient(_handler)
+        {
+            BaseAddress = new Uri("https://fake-workflow.local/")
+        };
+    }
+
     private SampleReadinessSnapshot CreateValidSample(
         string workflowMode = "prescreen",
         DateTime? expiresAt = null)
@@ -40,17 +70,31 @@ public class SampleReadinessTests
         };
     }
 
-    private (PenanciaDbContext db, SamplesController controller) CreateSamplesController(
+    private (PenanciaDbContext db, SamplesController controller, FakeHttpMessageHandler handler) CreateSamplesController(
         string userId = "user-123",
-        bool isStaff = false)
+        bool isStaff = false,
+        HttpStatusCode workflowStatusCode = HttpStatusCode.Accepted,
+        string? functionKey = "test-key-123")
     {
         var options = new DbContextOptionsBuilder<PenanciaDbContext>()
             .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
             .Options;
         var db = new PenanciaDbContext(options);
 
+        var inMemorySettings = new Dictionary<string, string?>();
+        if (functionKey != null)
+        {
+            inMemorySettings["Workflow:FunctionKey"] = functionKey;
+        }
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(inMemorySettings)
+            .Build();
+
+        var handler = new FakeHttpMessageHandler(workflowStatusCode);
+        var httpFactory = new FakeHttpClientFactory(handler);
+
         var logger = NullLogger<SamplesController>.Instance;
-        var controller = new SamplesController(db, null!, null!, null!, logger);
+        var controller = new SamplesController(db, null!, httpFactory, config, logger);
 
         var claims = new List<Claim>
         {
@@ -69,7 +113,7 @@ public class SampleReadinessTests
             HttpContext = new DefaultHttpContext { User = principal }
         };
 
-        return (db, controller);
+        return (db, controller, handler);
     }
 
     [Fact]
@@ -122,6 +166,23 @@ public class SampleReadinessTests
         Assert.Contains(PrerequisiteReasonCodes.CalibrationNotValid, result.MissingReasons);
     }
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0.0)]
+    [InlineData(-0.5)]
+    public void Calibration_WithNullOrZeroMicronsPerPixel_FailsWithCalibrationNotValid(double? umPerPx)
+    {
+        var sample = CreateValidSample();
+        var invalidCal = sample.Calibration! with { Status = "Valid", MicronsPerPixel = umPerPx };
+        sample = sample with { Calibration = invalidCal };
+        var media = CreateValidMedia();
+
+        var result = SampleReadiness.Check(sample, media);
+
+        Assert.False(result.IsReady);
+        Assert.Contains(PrerequisiteReasonCodes.CalibrationNotValid, result.MissingReasons);
+    }
+
     [Fact]
     public void ExpiredCalibration_ReturnsCalibrationExpiredCode()
     {
@@ -135,10 +196,40 @@ public class SampleReadinessTests
     }
 
     [Fact]
+    public void Calibration_WithNullExpiresAtUtc_FailsWithCalibrationExpired()
+    {
+        var sample = CreateValidSample();
+        var neverExpCal = sample.Calibration! with { Status = "Valid", ExpiresAtUtc = null };
+        sample = sample with { Calibration = neverExpCal };
+        var media = CreateValidMedia();
+
+        var result = SampleReadiness.Check(sample, media);
+
+        Assert.False(result.IsReady);
+        Assert.Contains(PrerequisiteReasonCodes.CalibrationExpired, result.MissingReasons);
+    }
+
+    [Fact]
     public void MissingMedia_ReturnsMissingMediaCode()
     {
         var sample = CreateValidSample();
         var media = new List<MediaAssetReadinessSnapshot>();
+
+        var result = SampleReadiness.Check(sample, media);
+
+        Assert.False(result.IsReady);
+        Assert.Contains(PrerequisiteReasonCodes.MissingMedia, result.MissingReasons);
+    }
+
+    [Fact]
+    public void OnlyCalibrationAssetPresent_FailsWithMissingMedia()
+    {
+        var sample = CreateValidSample();
+        // A calibration asset alone must NOT satisfy sample semen media
+        var media = new List<MediaAssetReadinessSnapshot>
+        {
+            new(Guid.NewGuid(), "Verified", "calibration")
+        };
 
         var result = SampleReadiness.Check(sample, media);
 
@@ -177,10 +268,44 @@ public class SampleReadinessTests
         Assert.Contains(PrerequisiteReasonCodes.MissingChamber, result.MissingReasons);
     }
 
+    [Theory]
+    [InlineData("clinical ")]
+    [InlineData(" Clinical")]
+    [InlineData("CLINICAL")]
+    public void ClinicalMode_Normalized_EnforcesChamberCheck(string rawMode)
+    {
+        var sample = CreateValidSample(workflowMode: rawMode) with
+        {
+            ChamberTypeId = null,
+            ChamberDepthMicrons = null
+        };
+        var media = CreateValidMedia();
+
+        var result = SampleReadiness.Check(sample, media);
+
+        Assert.False(result.IsReady);
+        Assert.Contains(PrerequisiteReasonCodes.MissingChamber, result.MissingReasons);
+    }
+
+    [Theory]
+    [InlineData("Clinic")]
+    [InlineData("unknown_mode")]
+    [InlineData("prescreen_v2")]
+    public void InvalidWorkflowMode_FailsWithInvalidWorkflowModeCode(string invalidMode)
+    {
+        var sample = CreateValidSample(workflowMode: invalidMode);
+        var media = CreateValidMedia();
+
+        var result = SampleReadiness.Check(sample, media);
+
+        Assert.False(result.IsReady);
+        Assert.Contains(PrerequisiteReasonCodes.InvalidWorkflowMode, result.MissingReasons);
+    }
+
     [Fact]
     public async Task CreateSample_LeavesUnmeasuredFieldsNull_AndSetsCatalogueDepth()
     {
-        var (db, controller) = CreateSamplesController(userId: "doc-123");
+        var (db, controller, _) = CreateSamplesController(userId: "doc-123");
         var req = new CreateSampleRequest(
             SampleId: "sample-alpha-1",
             SampleName: "Sample Alpha",
@@ -204,9 +329,40 @@ public class SampleReadinessTests
     }
 
     [Fact]
+    public async Task CreateSample_RejectsInventedCalibration_With422()
+    {
+        var (_, controller, _) = CreateSamplesController(userId: "doc-123");
+        var req = new CreateSampleRequest(
+            SampleId: "sample-invented-calib",
+            MicronsPerPixel: 0.4000, // Invented value supplied by client
+            WorkflowMode: "prescreen"
+        );
+
+        var result = await controller.CreateSample(req) as ObjectResult;
+        Assert.NotNull(result);
+        Assert.Equal(422, result.StatusCode);
+    }
+
+    [Theory]
+    [InlineData("Clinic")]
+    [InlineData("unsupported")]
+    public async Task CreateSample_RejectsInvalidWorkflowMode_With422(string badMode)
+    {
+        var (_, controller, _) = CreateSamplesController(userId: "doc-123");
+        var req = new CreateSampleRequest(
+            SampleId: "sample-bad-mode",
+            WorkflowMode: badMode
+        );
+
+        var result = await controller.CreateSample(req) as ObjectResult;
+        Assert.NotNull(result);
+        Assert.Equal(422, result.StatusCode);
+    }
+
+    [Fact]
     public async Task CreateSample_RejectsUnknownChamberType_With422()
     {
-        var (_, controller) = CreateSamplesController(userId: "doc-123");
+        var (_, controller, _) = CreateSamplesController(userId: "doc-123");
         var req = new CreateSampleRequest(
             SampleId: "sample-bad-1",
             SampleName: "Sample Bad",
@@ -225,7 +381,7 @@ public class SampleReadinessTests
     [Fact]
     public async Task TriggerAnalysis_PrerequisitesMissing_Returns422_WithMissingReasonList()
     {
-        var (db, controller) = CreateSamplesController(userId: "owner-1");
+        var (db, controller, _) = CreateSamplesController(userId: "owner-1");
         var sample = new SampleEntity
         {
             SampleId = "sample-missing-pre",
@@ -243,9 +399,12 @@ public class SampleReadinessTests
     }
 
     [Fact]
-    public async Task TriggerAnalysis_AllPrerequisitesMet_PassesAndCopiesMicronsPerPixel()
+    public async Task TriggerAnalysis_LeavesStateAsDraft_AndCallsWorkflow()
     {
-        var (db, controller) = CreateSamplesController(userId: "owner-2");
+        var (db, controller, handler) = CreateSamplesController(
+            userId: "owner-2",
+            workflowStatusCode: HttpStatusCode.Accepted);
+
         var cal = new CalibrationEntity
         {
             CalibrationId = Guid.NewGuid(),
@@ -268,7 +427,7 @@ public class SampleReadinessTests
             WorkflowMode = "prescreen",
             ConsentAtUtc = DateTime.UtcNow.AddHours(-1),
             CalibrationId = cal.CalibrationId,
-            MicronsPerPixel = null // Initially null
+            MicronsPerPixel = null
         };
         db.Samples.Add(sample);
 
@@ -286,16 +445,124 @@ public class SampleReadinessTests
         db.MediaAssets.Add(asset);
         await db.SaveChangesAsync();
 
-        var result = await controller.TriggerAnalysis(sample.SampleId) as OkObjectResult;
+        var result = await controller.TriggerAnalysis(sample.SampleId) as AcceptedResult;
         Assert.NotNull(result);
-        Assert.Equal(200, result.StatusCode);
+        Assert.Equal(202, result.StatusCode);
 
-        // Verify MicronsPerPixel was copied from calibration
-        Assert.Equal(0.4000, sample.MicronsPerPixel);
+        // Verify state remains Draft (not changed to Validating)
+        var freshSample = await db.Samples.FirstAsync(s => s.SampleId == sample.SampleId);
+        Assert.Equal("Draft", freshSample.State);
+
+        // Verify workflow HTTP endpoint was called
+        Assert.NotNull(handler.LastRequest);
+        Assert.Equal(HttpMethod.Post, handler.LastRequest.Method);
+        Assert.Contains(sample.SampleId, handler.LastRequest.RequestUri?.ToString());
     }
 
     [Fact]
-    public async Task ValidateFilesActivity_VerifiesStoredTruth_AndCopiesMicronsPerPixel()
+    public async Task TriggerAnalysis_Returns503_WhenWorkflowNotConfigured()
+    {
+        var (db, controller, _) = CreateSamplesController(
+            userId: "owner-503",
+            functionKey: null); // Missing function key
+
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-ready-503",
+            Status = "Valid",
+            MicronsPerPixel = 0.4000,
+            MeasuredPitchPx = 25.0,
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            CreatedAtUtc = DateTime.UtcNow,
+            ExpiresAtUtc = DateTime.UtcNow.AddDays(7)
+        };
+        db.Calibrations.Add(cal);
+
+        var sample = new SampleEntity
+        {
+            SampleId = "sample-ready-503",
+            CreatedBy = "owner-503",
+            State = "Draft",
+            WorkflowMode = "prescreen",
+            ConsentAtUtc = DateTime.UtcNow.AddHours(-1),
+            CalibrationId = cal.CalibrationId
+        };
+        db.Samples.Add(sample);
+
+        var asset = new MediaAssetEntity
+        {
+            AssetId = Guid.NewGuid(),
+            SampleId = sample.SampleId,
+            Kind = "video",
+            Container = "raw-videos",
+            BlobName = "video.mp4",
+            ContentTypeDeclared = "video/mp4",
+            SizeBytes = 4096,
+            Status = "Verified"
+        };
+        db.MediaAssets.Add(asset);
+        await db.SaveChangesAsync();
+
+        var result = await controller.TriggerAnalysis(sample.SampleId) as ObjectResult;
+        Assert.NotNull(result);
+        Assert.Equal(503, result.StatusCode);
+    }
+
+    [Fact]
+    public async Task TriggerAnalysis_Returns502_WhenWorkflowStartFails()
+    {
+        var (db, controller, _) = CreateSamplesController(
+            userId: "owner-502",
+            workflowStatusCode: HttpStatusCode.InternalServerError); // Upstream error
+
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-ready-502",
+            Status = "Valid",
+            MicronsPerPixel = 0.4000,
+            MeasuredPitchPx = 25.0,
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            CreatedAtUtc = DateTime.UtcNow,
+            ExpiresAtUtc = DateTime.UtcNow.AddDays(7)
+        };
+        db.Calibrations.Add(cal);
+
+        var sample = new SampleEntity
+        {
+            SampleId = "sample-ready-502",
+            CreatedBy = "owner-502",
+            State = "Draft",
+            WorkflowMode = "prescreen",
+            ConsentAtUtc = DateTime.UtcNow.AddHours(-1),
+            CalibrationId = cal.CalibrationId
+        };
+        db.Samples.Add(sample);
+
+        var asset = new MediaAssetEntity
+        {
+            AssetId = Guid.NewGuid(),
+            SampleId = sample.SampleId,
+            Kind = "video",
+            Container = "raw-videos",
+            BlobName = "video.mp4",
+            ContentTypeDeclared = "video/mp4",
+            SizeBytes = 4096,
+            Status = "Verified"
+        };
+        db.MediaAssets.Add(asset);
+        await db.SaveChangesAsync();
+
+        var result = await controller.TriggerAnalysis(sample.SampleId) as ObjectResult;
+        Assert.NotNull(result);
+        Assert.Equal(502, result.StatusCode);
+    }
+
+    [Fact]
+    public async Task ValidateFilesActivity_VerifiesStoredTruth_WithoutModifyingSample()
     {
         var options = new DbContextOptionsBuilder<PenanciaDbContext>()
             .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
@@ -324,7 +591,7 @@ public class SampleReadinessTests
             WorkflowMode = "prescreen",
             ConsentAtUtc = DateTime.UtcNow.AddHours(-1),
             CalibrationId = cal.CalibrationId,
-            MicronsPerPixel = null
+            MicronsPerPixel = null // Remains null: ValidateFilesActivity never copies calibration values
         };
         db.Samples.Add(sample);
 
@@ -349,6 +616,7 @@ public class SampleReadinessTests
         Assert.True(result);
 
         var refreshed = await db.Samples.FirstAsync(s => s.SampleId == sample.SampleId);
-        Assert.Equal(0.4000, refreshed.MicronsPerPixel);
+        // Assert ValidateFilesActivity did NOT write to sample.MicronsPerPixel
+        Assert.Null(refreshed.MicronsPerPixel);
     }
 }

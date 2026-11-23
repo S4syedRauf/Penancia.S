@@ -60,12 +60,6 @@ public class ValidateFilesActivity
             return false;
         }
 
-        if (sample.Calibration != null && sample.Calibration.Status == "Valid" && sample.Calibration.MicronsPerPixel.HasValue && sample.MicronsPerPixel == null)
-        {
-            sample.MicronsPerPixel = sample.Calibration.MicronsPerPixel.Value;
-            await _db.SaveChangesAsync();
-        }
-
         _logger.LogInformation("Files and optical parameters verified for sample {SampleId}.", sampleId);
         return true;
     }

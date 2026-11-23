@@ -90,10 +90,25 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup .NET SDK 8.0
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore tools and verify migration drift
+        run: |
+          dotnet tool restore
+          dotnet ef migrations has-pending-model-changes -p src/Penancia.S.Data -s src/Penancia.S.Api --configuration Release
+
       - name: Verify SQL Migrations
         env:
           MSSQL_SA_PASSWORD: 'YourStrong!Passw0rd'
         run: bash tools/verify_migrations.sh
+
+      - name: Run SQL Server Integration Tests
+        env:
+          TEST_SQLSERVER_CONNECTION_STRING: "Server=127.0.0.1,1433;Database=PenanciaDb;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True"
+        run: dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release --filter Category=SqlServer --verbosity normal
 
   # ============================================================
   # 1c. Test Model Workers (Python)
@@ -111,7 +126,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install pytest numpy scipy opencv-python-headless
+        run: pip install -r models/calibration/requirements.txt
 
       - name: Run Calibration Worker Tests
         run: pytest models/calibration -v

@@ -7,7 +7,7 @@ public class CatalogueTests
 {
     [Theory]
     [InlineData("leja-sc-20-01-02-b-ce", 20.0, "https://leja.nl/wp-content/uploads/2023/06/DOC-3.3-01-10-2023-04-24-Leja-slides-General-CE-User-Manual.pdf")]
-    [InlineData("vitrolife-microcell-15423", 20.0, "https://www.vitrolife.com/products/sperm-processing/microcell--accessories/")]
+    [InlineData("vitrolife-microcell-15423", 20.0, "https://www.vitrolife.com/globalassets/support-documents/product-manuals/microcell_user_manual-en-gb.pdf")]
     public void KnownChamber_ResolvesCorrectDepthAndDatasheet(string id, double expectedDepth, string expectedDatasheet)
     {
         var found = PhysicalCatalogues.TryGetChamber(id, out var chamber);
@@ -27,7 +27,8 @@ public class CatalogueTests
         Assert.True(found);
         Assert.NotNull(target);
         Assert.Equal(10.0, target.PitchUm);
-        Assert.Equal("https://www.thorlabs.com/stage-micrometers", target.DatasheetUrl);
+        Assert.Equal("1 mm scale, 10 µm divisions", target.DisplayName);
+        Assert.Equal("https://www.thorlabs.com/item/R1L3S2P", target.DatasheetUrl);
 
         var retrieved = PhysicalCatalogues.GetTarget("thorlabs-r1l3s2p");
         Assert.Equal(target, retrieved);

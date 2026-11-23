@@ -16,6 +16,7 @@ public static class PrerequisiteReasonCodes
     public const string MissingMedia = "MISSING_MEDIA";
     public const string MediaNotUploadedOrVerified = "MEDIA_NOT_UPLOADED_OR_VERIFIED";
     public const string MissingChamber = "MISSING_CHAMBER";
+    public const string InvalidWorkflowMode = "INVALID_WORKFLOW_MODE";
 }
 
 public sealed record CalibrationReadinessSnapshot(
@@ -69,34 +70,54 @@ public static class SampleReadiness
         {
             missing.Add(PrerequisiteReasonCodes.MissingCalibration);
         }
-        else if (!string.Equals(sample.Calibration.Status, "Valid", StringComparison.OrdinalIgnoreCase))
+        else if (!string.Equals(sample.Calibration.Status, "Valid", StringComparison.OrdinalIgnoreCase) ||
+                 !sample.Calibration.MicronsPerPixel.HasValue ||
+                 sample.Calibration.MicronsPerPixel.Value <= 0)
         {
             missing.Add(PrerequisiteReasonCodes.CalibrationNotValid);
         }
-        else if (sample.Calibration.ExpiresAtUtc.HasValue && sample.Calibration.ExpiresAtUtc.Value <= now)
+        else if (!sample.Calibration.ExpiresAtUtc.HasValue || sample.Calibration.ExpiresAtUtc.Value <= now)
         {
             missing.Add(PrerequisiteReasonCodes.CalibrationExpired);
         }
 
-        // 3. Media asset check
+        // 3. Media asset check (must be semen video or semen image, not calibration image)
         if (mediaAssets == null || mediaAssets.Count == 0)
         {
             missing.Add(PrerequisiteReasonCodes.MissingMedia);
         }
         else
         {
-            bool hasReadyAsset = mediaAssets.Any(a =>
-                string.Equals(a.Status, "Uploaded", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(a.Status, "Verified", StringComparison.OrdinalIgnoreCase));
+            bool hasAnyMediaAsset = mediaAssets.Any(a =>
+                string.Equals(a.Kind, "video", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(a.Kind, "image", StringComparison.OrdinalIgnoreCase));
 
-            if (!hasReadyAsset)
+            if (!hasAnyMediaAsset)
             {
-                missing.Add(PrerequisiteReasonCodes.MediaNotUploadedOrVerified);
+                missing.Add(PrerequisiteReasonCodes.MissingMedia);
+            }
+            else
+            {
+                bool hasReadyAsset = mediaAssets.Any(a =>
+                    (string.Equals(a.Kind, "video", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(a.Kind, "image", StringComparison.OrdinalIgnoreCase)) &&
+                    (string.Equals(a.Status, "Uploaded", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(a.Status, "Verified", StringComparison.OrdinalIgnoreCase)));
+
+                if (!hasReadyAsset)
+                {
+                    missing.Add(PrerequisiteReasonCodes.MediaNotUploadedOrVerified);
+                }
             }
         }
 
         // 4. Chamber depth specification for clinical mode
-        if (string.Equals(sample.WorkflowMode, "clinical", StringComparison.OrdinalIgnoreCase))
+        var mode = (sample.WorkflowMode ?? "").Trim().ToLowerInvariant();
+        if (mode != "prescreen" && mode != "clinical")
+        {
+            missing.Add(PrerequisiteReasonCodes.InvalidWorkflowMode);
+        }
+        else if (mode == "clinical")
         {
             if (string.IsNullOrWhiteSpace(sample.ChamberTypeId) ||
                 !sample.ChamberDepthMicrons.HasValue ||

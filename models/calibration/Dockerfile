@@ -16,7 +16,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY models/shared/ /app/shared/
 COPY models/calibration/worker.py /app/worker.py
 
-RUN pip install --no-cache-dir numpy scipy opencv-python-headless
+# Note: CLI only until Step 4.1 Service Bus container job integration.
+COPY models/calibration/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
 
 ENV PYTHONPATH=/app/shared
 
