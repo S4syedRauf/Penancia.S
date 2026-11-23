@@ -115,8 +115,24 @@ public class PenanciaDbContext : DbContext
             .HasDatabaseName("IX_LabOrders_TrackingNumber");
 
         // Phase 1 Foundation additions
+        modelBuilder.Entity<SampleEntity>()
+            .Property(s => s.WorkflowMode)
+            .HasDefaultValue("prescreen");
+
+        modelBuilder.Entity<SampleEntity>()
+            .HasOne(s => s.Calibration)
+            .WithMany()
+            .HasForeignKey(s => s.CalibrationId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         modelBuilder.Entity<IdempotencyKeyEntity>()
             .HasKey(k => new { k.Key, k.SampleId });
+
+        modelBuilder.Entity<CalibrationEntity>()
+            .HasOne<SampleEntity>()
+            .WithMany()
+            .HasForeignKey(c => c.SampleId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<CalibrationEntity>()
             .HasIndex(c => c.SampleId)
@@ -125,6 +141,12 @@ public class PenanciaDbContext : DbContext
         modelBuilder.Entity<CalibrationEntity>()
             .HasIndex(c => c.AssetId)
             .HasDatabaseName("IX_Calibrations_AssetId");
+
+        modelBuilder.Entity<MediaAssetEntity>()
+            .HasOne<SampleEntity>()
+            .WithMany()
+            .HasForeignKey(m => m.SampleId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         modelBuilder.Entity<MediaAssetEntity>()
             .HasIndex(m => m.SampleId)

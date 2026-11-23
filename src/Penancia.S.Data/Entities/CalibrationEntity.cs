@@ -16,12 +16,12 @@ public class CalibrationEntity
     public string TargetId { get; set; } = string.Empty;
 
     public double ReferencePitchUm { get; set; }
-    public double MeasuredPitchPx { get; set; }
-    public double MicronsPerPixel { get; set; }
-    public int LinesDetected { get; set; }
-    public double SpacingCvPct { get; set; }
-    public int ImageWidthPx { get; set; }
-    public int ImageHeightPx { get; set; }
+    public double? MeasuredPitchPx { get; set; }
+    public double? MicronsPerPixel { get; set; }
+    public int? LinesDetected { get; set; }
+    public double? SpacingCvPct { get; set; }
+    public int? ImageWidthPx { get; set; }
+    public int? ImageHeightPx { get; set; }
 
     public Guid AssetId { get; set; }
 
@@ -32,7 +32,7 @@ public class CalibrationEntity
     public string? RejectReason { get; set; }
 
     [MaxLength(32)]
-    public string ToolVersion { get; set; } = "1.0.0";
+    public string? ToolVersion { get; set; }
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
     public DateTime? ExpiresAtUtc { get; set; }

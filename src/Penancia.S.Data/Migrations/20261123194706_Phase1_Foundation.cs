@@ -67,7 +67,7 @@ namespace Penancia.S.Data.Migrations
                 type: "nvarchar(32)",
                 maxLength: 32,
                 nullable: false,
-                defaultValue: "");
+                defaultValue: "prescreen");
 
             migrationBuilder.CreateTable(
                 name: "Calibrations",
@@ -77,22 +77,28 @@ namespace Penancia.S.Data.Migrations
                     SampleId = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
                     TargetId = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
                     ReferencePitchUm = table.Column<double>(type: "float", nullable: false),
-                    MeasuredPitchPx = table.Column<double>(type: "float", nullable: false),
-                    MicronsPerPixel = table.Column<double>(type: "float", nullable: false),
-                    LinesDetected = table.Column<int>(type: "int", nullable: false),
-                    SpacingCvPct = table.Column<double>(type: "float", nullable: false),
-                    ImageWidthPx = table.Column<int>(type: "int", nullable: false),
-                    ImageHeightPx = table.Column<int>(type: "int", nullable: false),
+                    MeasuredPitchPx = table.Column<double>(type: "float", nullable: true),
+                    MicronsPerPixel = table.Column<double>(type: "float", nullable: true),
+                    LinesDetected = table.Column<int>(type: "int", nullable: true),
+                    SpacingCvPct = table.Column<double>(type: "float", nullable: true),
+                    ImageWidthPx = table.Column<int>(type: "int", nullable: true),
+                    ImageHeightPx = table.Column<int>(type: "int", nullable: true),
                     AssetId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
                     Status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
                     RejectReason = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
-                    ToolVersion = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    ToolVersion = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: true),
                     CreatedAtUtc = table.Column<DateTime>(type: "datetime2", nullable: false),
                     ExpiresAtUtc = table.Column<DateTime>(type: "datetime2", nullable: true)
                 },
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_Calibrations", x => x.CalibrationId);
+                    table.ForeignKey(
+                        name: "FK_Calibrations_Samples_SampleId",
+                        column: x => x.SampleId,
+                        principalTable: "Samples",
+                        principalColumn: "SampleId",
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateTable(
@@ -147,6 +153,12 @@ namespace Penancia.S.Data.Migrations
                 constraints: table =>
                 {
                     table.PrimaryKey("PK_MediaAssets", x => x.AssetId);
+                    table.ForeignKey(
+                        name: "FK_MediaAssets_Samples_SampleId",
+                        column: x => x.SampleId,
+                        principalTable: "Samples",
+                        principalColumn: "SampleId",
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateTable(
@@ -201,7 +213,8 @@ namespace Penancia.S.Data.Migrations
                 table: "Samples",
                 column: "CalibrationId",
                 principalTable: "Calibrations",
-                principalColumn: "CalibrationId");
+                principalColumn: "CalibrationId",
+                onDelete: ReferentialAction.Restrict);
         }
 
         /// <inheritdoc />

@@ -12,7 +12,7 @@ using Penancia.S.Data;
 namespace Penancia.S.Data.Migrations
 {
     [DbContext(typeof(PenanciaDbContext))]
-    [Migration("20261123191832_Phase1_Foundation")]
+    [Migration("20261123194706_Phase1_Foundation")]
     partial class Phase1_Foundation
     {
         /// <inheritdoc />
@@ -76,19 +76,19 @@ namespace Penancia.S.Data.Migrations
                     b.Property<DateTime?>("ExpiresAtUtc")
                         .HasColumnType("datetime2");
 
-                    b.Property<int>("ImageHeightPx")
+                    b.Property<int?>("ImageHeightPx")
                         .HasColumnType("int");
 
-                    b.Property<int>("ImageWidthPx")
+                    b.Property<int?>("ImageWidthPx")
                         .HasColumnType("int");
 
-                    b.Property<int>("LinesDetected")
+                    b.Property<int?>("LinesDetected")
                         .HasColumnType("int");
 
-                    b.Property<double>("MeasuredPitchPx")
+                    b.Property<double?>("MeasuredPitchPx")
                         .HasColumnType("float");
 
-                    b.Property<double>("MicronsPerPixel")
+                    b.Property<double?>("MicronsPerPixel")
                         .HasColumnType("float");
 
                     b.Property<double>("ReferencePitchUm")
@@ -103,7 +103,7 @@ namespace Penancia.S.Data.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
 
-                    b.Property<double>("SpacingCvPct")
+                    b.Property<double?>("SpacingCvPct")
                         .HasColumnType("float");
 
                     b.Property<string>("Status")
@@ -117,7 +117,6 @@ namespace Penancia.S.Data.Migrations
                         .HasColumnType("nvarchar(64)");
 
                     b.Property<string>("ToolVersion")
-                        .IsRequired()
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
 
@@ -628,8 +627,10 @@ namespace Penancia.S.Data.Migrations
 
                     b.Property<string>("WorkflowMode")
                         .IsRequired()
+                        .ValueGeneratedOnAdd()
                         .HasMaxLength(32)
-                        .HasColumnType("nvarchar(32)");
+                        .HasColumnType("nvarchar(32)")
+                        .HasDefaultValue("prescreen");
 
                     b.Property<string>("WorkflowVersion")
                         .IsRequired()
@@ -754,6 +755,15 @@ namespace Penancia.S.Data.Migrations
                     b.Navigation("Sample");
                 });
 
+            modelBuilder.Entity("Penancia.S.Data.Entities.CalibrationEntity", b =>
+                {
+                    b.HasOne("Penancia.S.Data.Entities.SampleEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SampleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Penancia.S.Data.Entities.LabOrderEntity", b =>
                 {
                     b.HasOne("Penancia.S.Data.Entities.PartnerClinicEntity", "Clinic")
@@ -772,6 +782,15 @@ namespace Penancia.S.Data.Migrations
                     b.Navigation("SlotHold");
                 });
 
+            modelBuilder.Entity("Penancia.S.Data.Entities.MediaAssetEntity", b =>
+                {
+                    b.HasOne("Penancia.S.Data.Entities.SampleEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SampleId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("Penancia.S.Data.Entities.ModelRunEntity", b =>
                 {
                     b.HasOne("Penancia.S.Data.Entities.SampleEntity", "Sample")
@@ -787,7 +806,8 @@ namespace Penancia.S.Data.Migrations
                 {
                     b.HasOne("Penancia.S.Data.Entities.CalibrationEntity", "Calibration")
                         .WithMany()
-                        .HasForeignKey("CalibrationId");
+                        .HasForeignKey("CalibrationId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Calibration");
                 });

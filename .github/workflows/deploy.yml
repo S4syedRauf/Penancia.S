@@ -65,6 +65,37 @@ jobs:
         run: dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj --no-build -c Release --verbosity normal
 
   # ============================================================
+  # 1b. Verify SQL Server Migrations (SQL Server 2022)
+  # ============================================================
+  verify_sql_migrations:
+    runs-on: ubuntu-latest
+    name: Verify SQL Migrations (SQL Server 2022)
+    if: github.event_name == 'pull_request'
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: 'YourStrong!Passw0rd'
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'YourStrong!Passw0rd' -C -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify SQL Migrations
+        env:
+          MSSQL_SA_PASSWORD: 'YourStrong!Passw0rd'
+        run: bash tools/verify_migrations.sh
+
+  # ============================================================
   # 2. Build & Test Frontend
   # ============================================================
   build_test_frontend:

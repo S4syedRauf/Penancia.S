@@ -416,7 +416,55 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 - **Known gaps / risks:** Real SQL Server container could not be started locally due to missing Docker environment; SQL script application against a live server is marked INCOMPLETE.
 - **Rollback:** Remove migration files and revert entity changes.
 - **Follow-ups for the next developer or model:** Step 1.2 catalog entries backed by manufacturer datasheets.
-- **Commit(s):** pending for this CL-0012 entry
+- **Commit(s):** f074659 (CL-0012), fb8c57c (CL-0011)
+
+---
+
+### CL-0013 — Step 1.1 Review Fixes, CI SQL Server Verification, and Step 1.2 Catalogues
+
+- **Date (UTC):** 2026-11-23T20:00:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 1 / Step 1.1 (fixes) & Step 1.2
+- **Issue IDs:** ISS-001, ISS-002, ISS-015, ISS-016
+- **Type:** Fixed & Added
+- **Summary:**
+  1. **Reverted semenReport.ts modification:** Restored `frontend/src/utils/semenReport.ts` to `origin/main` state (preserving the standard clinical disclaimer and removing kit preset display), while maintaining the negative assertions in `frontend/src/utils/semenReport.test.ts`. Verified with `bun test` (all 6 pass).
+  2. **Fixed WorkflowMode migration default:** Added `.HasDefaultValue("prescreen")` on `SampleEntity` in `PenanciaDbContext.cs`. The generated EF migration now emits `DEFAULT N'prescreen'`, guaranteeing existing and new records receive `"prescreen"`.
+  3. **Eliminated invented calibration numbers:** In `CalibrationEntity`, made `MeasuredPitchPx`, `MicronsPerPixel`, `LinesDetected`, `SpacingCvPct`, `ImageWidthPx`, `ImageHeightPx`, and `ToolVersion` nullable with no defaults. Verified new instances default all to null.
+  4. **Linked foreign keys:** Added explicit foreign keys with `DeleteBehavior.Restrict` from `Calibrations.SampleId` to `Samples.SampleId`, and `MediaAssets.SampleId` to `Samples.SampleId`, preventing orphaned records.
+  5. **Clean migration & idempotent migrations.sql:** Deleted previous migration and regenerated clean migration `20261123194706_Phase1_Foundation`. Generated `migrations.sql` via `dotnet ef migrations script --idempotent`, replacing the outdated hand-written SQL script header.
+  6. **CI SQL Server 2022 verification:** Added `tools/verify_migrations.sh` and a pull-request job `verify_sql_migrations` to `.github/workflows/deploy.yml` with `mcr.microsoft.com/mssql/server:2022-latest` service container. Tests: (a) applying to empty database (`db_fresh`), (b) re-applying for idempotence, (c) applying `origin/main:migrations.sql`, inserting minimal sample row, applying new script, asserting `WorkflowMode = 'prescreen'`, nullable calibration columns, and foreign keys.
+  7. **Step 1.2 Physical Catalogues:** Added `src/Penancia.S.Domain/Model/Catalogues.cs` defining `ChamberType` and `CalibrationTarget` backed by manufacturer datasheet URLs (`Leja SC 20-01-02-B-CE`, `Vitrolife MicroCell REF 15423`, `Thorlabs R1L3S2P`). Added `CatalogueTests.cs` proving unknown IDs are rejected. Demonstrated mutation proof. Updated generic kit presets in `frontend/src/data/catalogs.ts` and `panaceaCatalogs.ts` to have null depth and calibrated µm/px.
+- **Why:** Comply with PR #2 review feedback, eliminate invented calibration values, enforce database relational integrity, prove migration safety on real SQL Server 2022 in CI, and establish manufacturer-backed physical catalogues.
+- **Files changed:**
+  - `frontend/src/utils/semenReport.ts` — reverted product code changes
+  - `src/Penancia.S.Data/Entities/CalibrationEntity.cs` — nullable calibration metrics and tool version
+  - `src/Penancia.S.Data/PenanciaDbContext.cs` — default value 'prescreen' and Restrict FKs
+  - `src/Penancia.S.Data/Migrations/20261123194706_Phase1_Foundation.cs` — clean migration
+  - `src/Penancia.S.Data/Migrations/20261123194706_Phase1_Foundation.Designer.cs` — designer file
+  - `src/Penancia.S.Data/Migrations/PenanciaDbContextModelSnapshot.cs` — snapshot
+  - `migrations.sql` — generated idempotent SQL script
+  - `tests/Penancia.S.Tests/Phase1DatabaseModelTests.cs` — model tests for nullability and FKs
+  - `src/Penancia.S.Domain/Model/Catalogues.cs` — physical catalogues backed by datasheets
+  - `tests/Penancia.S.Tests/CatalogueTests.cs` — unknown ID rejection and lookup tests
+  - `frontend/src/data/catalogs.ts` — null depth/calibration for generic presets
+  - `frontend/src/data/panaceaCatalogs.ts` — null depth/calibration for generic presets
+  - `tools/verify_migrations.sh` — automated migration verification script
+  - `.github/workflows/deploy.yml` — verify_sql_migrations PR job with SQL Server 2022
+  - `CHANGELOG.md` — added CL-0013
+- **Behaviour before → after:** Existing database records upgrade cleanly with WorkflowMode='prescreen'; no invented calibration numbers or version strings are written; relational constraints prevent orphaned calibration and asset rows; unknown chamber or target IDs are rejected; CI validates SQL migration on real SQL Server 2022.
+- **Contract / schema / API changes:** SampleEntity.WorkflowMode defaults to "prescreen"; calibration fields nullable; FK constraints added.
+- **Database migration:** `20261123194706_Phase1_Foundation`
+- **Config / env / infra changes:** Added SQL Server 2022 verification job to GitHub Actions workflow.
+- **Tests run:**
+  - `dotnet build Penancia.S.sln -c Release` → 0 warnings, 0 errors
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 187 passed, 0 failed
+  - `cd frontend && bun test && bun run lint && bun run build` → 27 tests passed, lint clean, built successfully
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed (exit 0)
+- **Known gaps / risks:** Host machine lacks local Docker daemon; SQL Server container validation runs via GitHub Actions CI service container.
+- **Rollback:** Revert commit on `phase-1/data-foundation`.
+- **Follow-ups for the next developer or model:** Step 1.3 calibration algorithm server-side worker with synthetic ruling pytest suite.
+- **Commit(s):** pending for this CL-0013 entry
 
 ---
 
