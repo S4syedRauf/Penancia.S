@@ -517,6 +517,48 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0015 — Step 1.4: Optical Calibration API and Lifecycle Endpoints
+
+- **Date (UTC):** 2026-11-23T20:40:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 1 / Step 1.4
+- **Issue IDs:** ISS-001
+- **Type:** Added & Changed & Correction
+- **Summary:**
+  1. **Correction:** CL-0014 recorded its commit SHA as pending; the commit on `phase-1/data-foundation` is `de49803191936c088bab2740e0f6caf8b38300eb` (`2026-11-23T20:22:51Z`).
+  2. **Step 1.4 Optical Calibration Endpoints (`CalibrationController.cs`):**
+     - Implemented `POST /v1/semen/samples/{sampleId}/calibration`: verifies sample ownership (or staff role), validates target against `PhysicalCatalogues.TryGetTarget`, validates asset exists and status is `Verified` (returning 422 `ASSET_NOT_VERIFIED` otherwise; documented deviation: pre-verified assets required pending Phase 2 upload scanner pipeline), creates `CalibrationEntity` in `Pending` state with no invented metrics, writes outbox message `job-calibration` for asynchronous dispatch, and returns 202 Accepted with `{ ok, calibrationId, status, targetId, referencePitchUm }`.
+     - Implemented `GET /v1/semen/samples/{sampleId}/calibration/{calibrationId}`: returns stored calibration record with measured metrics, quality indicators, rejection reasons, and expiry.
+     - Deprecated legacy `POST /v1/semen/calibration`: returns 410 Gone unless `DEMO_MODE` configuration or environment variable is true.
+  3. **Integration tests (`tests/Penancia.S.Tests/CalibrationApiTests.cs`):**
+     - Legacy endpoint returns 410 Gone when demo mode is off.
+     - Legacy endpoint returns 200 Ok when demo mode is on.
+     - Post sample calibration rejects unknown target ID with 422 (`UNKNOWN_CALIBRATION_TARGET`).
+     - Post sample calibration rejects unverified media asset with 422 (`ASSET_NOT_VERIFIED`).
+     - Post sample calibration rejects foreign caller with 403 Forbid.
+     - End-to-end integration: Post returns 202 Accepted with Pending entity and outbox message; simulating worker result transitions entity to Valid; GET returns 200 with scale factor; sample links to Valid calibration row in SQL.
+- **Why:** Replace unphysical immediate calibration with asynchronous, verified optical calibration lifecycle and deprecate uncalibrated legacy endpoints.
+- **Files changed:**
+  - `src/Penancia.S.Api/Controllers/V1/CalibrationController.cs` — new calibration API endpoints and 410 gate on legacy endpoint
+  - `tests/Penancia.S.Tests/CalibrationApiTests.cs` — integration tests for calibration API
+  - `tests/Penancia.S.Tests/Penancia.S.Tests.csproj` — referenced Api and InMemory DB
+  - `CHANGELOG.md` — added CL-0015
+- **Behaviour before → after:** Users can enqueue calibration on verified optical media assets with certified targets; pending calibration row is created without invented values; legacy calibration returns 410 Gone in production.
+- **Contract / schema / API changes:** Added `POST /v1/semen/samples/{sampleId}/calibration` (202 Accepted), `GET /v1/semen/samples/{sampleId}/calibration/{calibrationId}` (200 OK), deprecated `POST /v1/semen/calibration` (410 Gone in production).
+- **Database migration:** none (entities added in Step 1.1)
+- **Config / env / infra changes:** none
+- **Tests run:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 208 passed, 0 failed
+  - `pytest models/calibration/test_calibration.py -v` → 6 passed in 1.06s
+  - `cd frontend && bun test && bun run lint && bun run build` → 27 tests passed, lint clean, build succeeded
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed (exit 0)
+- **Known gaps / risks:** Documented deviation: verifying assets prior to calibration depends on Phase 2 upload scanner pipeline; simulated in tests.
+- **Rollback:** Revert commit on `phase-1/data-foundation`.
+- **Follow-ups for the next developer or model:** Step 1.5 fill sample facts from stored truth sources.
+- **Commit(s):** pending for this CL-0015 entry
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did

@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.8" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.10.0" />
     <PackageReference Include="xunit" Version="2.9.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
@@ -16,6 +17,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Penancia.S.Domain\Penancia.S.Domain.csproj" />
     <ProjectReference Include="..\..\src\Penancia.S.Data\Penancia.S.Data.csproj" />
+    <ProjectReference Include="..\..\src\Penancia.S.Api\Penancia.S.Api.csproj" />
+    <ProjectReference Include="..\..\src\Penancia.S.Workflow\Penancia.S.Workflow.csproj" />
   </ItemGroup>
 
 </Project>
