@@ -96,6 +96,27 @@ jobs:
         run: bash tools/verify_migrations.sh
 
   # ============================================================
+  # 1c. Test Model Workers (Python)
+  # ============================================================
+  test_models:
+    runs-on: ubuntu-latest
+    name: Test Model Workers (Python)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pytest numpy scipy opencv-python-headless
+
+      - name: Run Calibration Worker Tests
+        run: pytest models/calibration -v
+
+  # ============================================================
   # 2. Build & Test Frontend
   # ============================================================
   build_test_frontend:

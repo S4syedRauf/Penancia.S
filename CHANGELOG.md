@@ -464,7 +464,56 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 - **Known gaps / risks:** Host machine lacks local Docker daemon; SQL Server container validation runs via GitHub Actions CI service container.
 - **Rollback:** Revert commit on `phase-1/data-foundation`.
 - **Follow-ups for the next developer or model:** Step 1.3 calibration algorithm server-side worker with synthetic ruling pytest suite.
-- **Commit(s):** pending for this CL-0013 entry
+- **Commit(s):** 677c414, cea5de2
+
+---
+
+### CL-0014 — Step 1.3: Server-Side Calibration Worker and Pytest Suite
+
+- **Date (UTC):** 2026-11-23T20:25:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 1 / Step 1.3
+- **Issue IDs:** ISS-001
+- **Type:** Added
+- **Summary:**
+  1. **Optical Calibration Worker (`models/calibration/worker.py`):** Replaced the unphysical formula with the rigorous 7-step optical calibration algorithm specified in `docs/BLUEPRINT.md`:
+     - Reads input image in any resolution, converts to single-channel grayscale, and records `ImageWidthPx`, `ImageHeightPx`.
+     - Estimates graticule ruling line orientation via Gaussian pre-filtering, Canny edge detection, and Hough line transform; computes median tilt angle and rotates image to vertically align ruling lines.
+     - Samples central 40% horizontal band (rows 30% to 70%), collapses rows to a 1-D column intensity profile, and applies 1-D Gaussian smoothing (`sigma=1.2`).
+     - Detects line peaks on normalized inverted profile via `scipy.signal.find_peaks` with sub-pixel parabolic peak interpolation.
+     - Calculates median pitch in pixels and spacing coefficient of variation (`spacing_cv_pct = 100.0 * std / mean`).
+     - Evaluates against provisional thresholds (`min_lines = 6`, `max_cv_pct = 5.0%`), marking them `PROVISIONAL_PENDING_PHASE_10`.
+     - Computes spatial resolution scale factor: `microns_per_pixel = reference_pitch_um / measured_pitch_px`.
+  2. **Synthetic Ruling Pytest Suite (`models/calibration/test_calibration.py`):** Added comprehensive automated test suite covering:
+     - Exact known ratio: synthetic graticule at known pitch (25.0 px) and reference pitch (10.0 µm) gives exact ratio within 0.5% tolerance (0.0% error observed).
+     - Rotated ruling: synthetic ruling rotated by 3° recovers scale factor within 0.5% tolerance (0.0% error observed).
+     - Sensor noise: synthetic ruling with Gaussian noise ($\sigma=15$) recovers scale factor within 0.5% tolerance (0.0% error observed).
+     - Uneven spacing rejection: irregular line spacing (CV > 5.0%) is rejected with `EXCESSIVE_SPACING_VARIANCE`.
+     - Insufficient lines rejection: fewer than 6 lines detected is rejected with `INSUFFICIENT_LINES`.
+     - Threshold status: verifies `thresholds_provisional` carries explicit `PROVISIONAL_PENDING_PHASE_10` label.
+  3. **Containerization (`models/calibration/Dockerfile`):** Defined container build inheriting `python:3.11-slim` with OpenCV system libraries and dependencies.
+  4. **CI Integration (`.github/workflows/deploy.yml`):** Added `test_models` job to GitHub Actions workflow running `pytest models/calibration -v`.
+- **Why:** Replace invented scale factor formulas with an actual physics-based computer vision calibration algorithm and automated synthetic verification tests.
+- **Files changed:**
+  - `models/calibration/worker.py` — 7-step calibration algorithm and CalibrationWorker
+  - `models/calibration/test_calibration.py` — synthetic ruling test suite (6 tests)
+  - `models/calibration/Dockerfile` — container definition
+  - `tools/verify_migrations.sh` — minor cleanup for digit parsing
+  - `.github/workflows/deploy.yml` — added test_models CI job
+  - `CHANGELOG.md` — added CL-0014
+- **Behaviour before → after:** Server-side optical calibration calculates true µm/px from image pixels and known target pitch; enforces line count and spacing uniformity; tests verify accuracy within 0.5% across tilt and noise.
+- **Contract / schema / API changes:** Calibration worker outputs `result.json` with measured pitch, CV%, detected line centres, and provisional threshold metadata.
+- **Database migration:** none
+- **Config / env / infra changes:** Added `test_models` job to `.github/workflows/deploy.yml`.
+- **Tests run:**
+  - `pytest models/calibration/test_calibration.py -v` → 6 passed in 0.73s
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 187 passed, 0 failed
+  - `cd frontend && bun test && bun run lint && bun run build` → 27 tests passed, lint clean, build succeeded
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed (exit 0)
+- **Known gaps / risks:** Real optical images under low contrast or extreme vignette will require Phase 10 optical threshold tuning.
+- **Rollback:** Delete `models/calibration/` and revert workflow changes.
+- **Follow-ups for the next developer or model:** Step 1.4 API endpoints (`POST v1/semen/calibration` returning 410 in production, new endpoints, integration tests).
+- **Commit(s):** pending for this CL-0014 entry
 
 ---
 

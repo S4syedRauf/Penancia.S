@@ -84,7 +84,7 @@ run_sqlcmd "" "IF DB_ID('db_fresh') IS NOT NULL DROP DATABASE db_fresh; CREATE D
 run_sqlfile "db_fresh" "migrations.sql"
 
 # Check table count
-TABLE_COUNT=$(run_sqlcmd "db_fresh" "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.tables;" | tr -d ' \r\n')
+TABLE_COUNT=$(run_sqlcmd "db_fresh" "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.tables;" | tr -dc '0-9')
 echo "db_fresh table count: $TABLE_COUNT"
 if [ "$TABLE_COUNT" -lt 10 ]; then
   echo "FAIL: Expected at least 10 tables, found $TABLE_COUNT" >&2
