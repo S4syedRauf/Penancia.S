@@ -66,9 +66,12 @@ test('report uses measurements from the supplied image and never substitutes pre
 
   assert.equal(report.source.fileName, 'patient-upload.jpg');
   assert.equal(report.source.sha256, 'abc123def456');
-  assert.equal(report.candidate.morphology, 'Tapered');
-  assert.equal(report.candidate.headLength, '5.40 µm');
-  assert.equal(report.candidate.headWidth, '2.70 µm');
+  // When ENABLE_HEURISTIC_MORPHOLOGY and DEMO_MODE are false, heuristic fields show "Not available in this mode"
+  assert.equal(report.candidate.morphology, 'Not available in this mode');
+  assert.equal(report.candidate.headLength, 'Not measured');
+  assert.equal(report.candidate.headWidth, 'Not measured');
+  assert.equal(report.candidate.lengthToWidthRatio, 'Not measured');
+  assert.equal(report.candidate.acrosomeCoverage, 'Not measured');
   assert.equal(report.capture.focusVariance, '187.42');
   assert.equal(report.capture.darkClipping, '1.25%');
   assert.equal(report.notAssessed.concentration, 'Not assessed');
@@ -76,7 +79,8 @@ test('report uses measurements from the supplied image and never substitutes pre
   assert.equal(report.notAssessed.vitality, 'Not assessed');
 
   const html = generateSemenReportHtml(report);
-  assert.match(html, /Tapered/);
+  // HTML should not contain heuristic values when flags are false
+  assert.doesNotMatch(html, /Tapered/);
   assert.match(html, /187\.42/);
   assert.doesNotMatch(html, /Typical|researchOnlyBand|0\.8 TZI/);
   assert.match(html, /data:image\/jpeg;base64,preview/);
@@ -95,7 +99,8 @@ test('no candidate produces an honest no-measurement report', () => {
   const report = buildSemenReport({ ...run, noSpermSeen: true }, noCandidate, 'en');
 
   assert.equal(report.candidate.status, 'No eligible cell-like structure detected');
-  assert.equal(report.candidate.morphology, 'Not assessable');
+  // When ENABLE_HEURISTIC_MORPHOLOGY and DEMO_MODE are false, heuristic fields show "Not available in this mode"
+  assert.equal(report.candidate.morphology, 'Not available in this mode');
   assert.equal(report.candidate.headLength, 'Not measured');
   assert.equal(report.candidate.acrosomeCoverage, 'Not measured');
   assert.match(generateSemenReportHtml(report), /No eligible cell-like structure detected/);

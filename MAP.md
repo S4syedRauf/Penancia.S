@@ -4,30 +4,51 @@ This document serves as the master navigation index and system map for the entir
 
 ---
 
-## 1. High-Level System Architecture
+## 1. Service & Queue Status Table
+
+| Service | Queue | Status | Owner Phase | Notes |
+|---------|-------|--------|-------------|-------|
+| video-qc | job-video-qc | **stub** | 4 | Hard-coded focus/brightness; no OpenCV (ISS-007) |
+| pycasa | job-pycasa | planned | 5 | No worker code exists |
+| banerjee | job-banerjee | planned | 5 | No worker code exists |
+| detect-track | job-detect-track | planned | 5 | CANDIDATE — benchmark required (G-DET, G-TRK) |
+| classical-motion | job-classical-motion | planned | 5 | Baseline tracker (non-learned) |
+| calibration | job-calibration | planned | 1, 4 | Server-side µm/px measurement |
+| maskrcnn/cellpose | job-maskrcnn | planned | 11 | Segmentation (stained slides) |
+| madrnet | job-madrnet | planned | 11 | Morphology classifier |
+| cbam | job-cbam | planned | 11 | Morphology classifier |
+| maml | job-maml | planned | 11 | Morphology classifier |
+| spermmorpho | job-spermmorpho | planned | 11 | Morphology classifier |
+| opencasa | job-opencasa | planned | 11 | Vitality (assay images) |
+| active | job-active | planned | 11 | Unspecified |
+| model-results | model-results | **missing receiver** | 3 | No Function raises `model_done:*` events (ISS-004/005) |
+
+---
+
+## 2. High-Level System Architecture
 
 ```
-                          [ BROWSER: Staff Portal (Blazor, planned — not in repo) ]   [ MOBILE APP (Phase 2) ]
-                                          │                              │
-                                          └──────────────┬───────────────┘
-                                                         │ Entra ID JWT Tokens
-                                                         ▼
-                                             [ Penancia.S.Api ]
+                          [ BROWSER: Staff Portal (Blazor, planned — not in repo) ]   [ MOBILE APP (Phase 11) ]
+                                              │                              │
+                                              └──────────────┬───────────────┘
+                                                             │ Entra ID JWT Tokens
+                                                             ▼
+                                                 [ Penancia.S.Api ]
                                         (ASP.NET Core v1 Gateway / Port)
                                          - Direct SAS Upload Tokens
                                          - Mobile rule: 'Released' only
                                          - Dual Sign-Off enforcement
-                                                         │
-                                    ┌────────────────────┴────────────────────┐
-                                    ▼                                         ▼
-                            [ Azure Storage ]                       [ Azure SQL Database ]
-                     (raw-video, raw-images, quarantine)            (System of Record & Ledger)
-                                    │                                         ▲
-                         Submit New Sample Event                              │
-                                    ▼                                         │
-       ┌────────────────────────────────────────────────────────┐             │
-       │     AZURE DURABLE FUNCTIONS ORCHESTRATOR (C#)          │             │
-       │           Instance ID = sample_id                      ├─────────────┘
+                                                             │
+                                                    ┌────────┴────────┐
+                                                    ▼               ▼
+                                            [ Azure Storage ]  [ Azure SQL Database ]
+                                   (raw-video, raw-images, quarantine)  (System of Record & Ledger)
+                                                    │               ▲
+                                         Submit New Sample Event               │
+                                                    ▼               │
+       ┌────────────────────────────────────────────────────────┐   │
+       │     AZURE DURABLE FUNCTIONS ORCHESTRATOR (C#)          │   │
+       │           Instance ID = sample_id                      ├───┘
        │                                                        │
        │  Phase 1: Malware & Format Validation (Defender Scan)  │
        │  Phase 2: Parallel Fan-Out (Service Bus Queues)        │
@@ -38,32 +59,32 @@ This document serves as the master navigation index and system map for the entir
        │  Phase 7: Verified Dual Sign-Off (Signer ≠ Enterer)    │
        └────────────────────────────┬───────────────────────────┘
                                     │
-                 ┌──────────────────┴──────────────────┐
-                 ▼                                     ▼
-        [ Service Bus Queues ]                [ Azure Container Registry ]
-       (One queue per model job)                 (Pinned model digests)
-                 │
-                 ▼
-  [ Container Apps Jobs — 3 wired, 7 planned ]
-  • video-qc   (wired — dispatched by the orchestrator)
-  • pycasa     (wired — dispatched by the orchestrator)
-  • banerjee   (wired — dispatched by the orchestrator)
-  Planned, not wired: active, maskrcnn/cellpose, madrnet,
-  cbam, maml, spermmorpho, opencasa. Their Service Bus queues
-  exist in infra/main.bicep, but no model container is dispatched
-  by the orchestrator yet.
-                 │
-                 ▼ Results Message
-         [ model-results Queue ]
-                 │
-                 ▼
-     [ Durable Orchestrator Event:
-       model_done:{service}:{job_id} ]
+                     ┌──────────────┴──────────────┐
+                     ▼                             ▼
+            [ Service Bus Queues ]        [ Azure Container Registry ]
+           (One queue per model job)         (Pinned model digests)
+                     │
+                     ▼
+       [ Container Apps Jobs — 1 stub, 13 planned ]
+       • video-qc   (stub — hard-coded, dispatched by orchestrator)
+       • pycasa     (planned — no worker)
+       • banerjee   (planned — no worker)
+       • detect-track   (planned — CANDIDATE, benchmark gate G-DET/G-TRK)
+       • classical-motion (planned — baseline tracker)
+       • calibration     (planned — server-side µm/px)
+       • maskrcnn/cellpose/madrnet/cbam/maml/spermmorpho/opencasa/active (planned — Phase 11)
+                     │
+                     ▼ Results Message
+             [ model-results Queue ]
+                     │
+                     ▼
+         [ Durable Orchestrator Event:
+           model_done:{service}:{job_id} ]
 ```
 
 ---
 
-## 2. Directory Map & Component Roles
+## 3. Directory Map & Component Roles
 
 ```
 .
@@ -85,7 +106,7 @@ This document serves as the master navigation index and system map for the entir
 │   │   └── base_worker.py         <-- Base worker class for all model containers
 │   └── video-qc/                  <-- Step 3: Video quality control (OpenCV blur, drift, focus)
 │       ├── Dockerfile             # Container definition for Container Apps Job
-│       └── worker.py              # Laplacian focus, illumination, drift calculation
+│       └── worker.py              # Laplacian focus, illumination, drift calculation (STUB)
 ├── src/                           <-- Core application source code (.NET 8)
 │   ├── Penancia.S.Domain/      <-- Pure business logic: Rules table, Kinematics, State Machine
 │   │   ├── Model/                 # Measurement, Provenance, Enums, Calibration, IClock

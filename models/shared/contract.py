@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any
 class JobRequest:
     """
     Standardized payload delivered via Service Bus queue: sb-sahatnasemen/job-<service>
-    Ensures deterministic, idempotent execution across all 10 computer vision models.
+    Ensures deterministic, idempotent execution across all model workers.
     """
     job_id: str             # Format: "{sample_id}:{service}:{attempt}"
     sample_id: str          # Unique clinical identifier

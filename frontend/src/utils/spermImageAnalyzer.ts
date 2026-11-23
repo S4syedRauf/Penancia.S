@@ -9,7 +9,7 @@ export interface ImageAnalysisResult {
   clippedDarkPct: number;
   clippedBrightPct: number;
   cellDetected: boolean;
-  morphologyCategory: 'Normal' | 'Tapered' | 'Pyriform' | 'Amorphous' | 'Unclassified';
+  morphologyCategory: 'Normal' | 'Tapered' | 'Pyriform' | 'Amorphous' | 'Unclassified' | 'NotMeasured';
   acrosomeCoveragePct: number;
   headLengthUm: number;
   headWidthUm: number;
@@ -34,6 +34,7 @@ export async function computeFileSha256(file: File): Promise<string> {
 
 /**
  * Extracts a high-quality video frame from any HTML5-compatible video format.
+ * @deprecated ISS-011 — delete in Step 7.2
  */
 export async function extractFrameFromVideo(file: File): Promise<{ canvas: HTMLCanvasElement; width: number; height: number; duration: number }> {
   return new Promise((resolve, reject) => {
@@ -97,6 +98,7 @@ export async function extractFrameFromVideo(file: File): Promise<{ canvas: HTMLC
 /**
  * Reads any image (BMP, PNG, JPG) or extracts a frame from video and performs cytological morphometric analysis.
  * Non-blocking, handles downscaling to max 1024px to prevent UI freezes on large micrographs.
+ * @deprecated ISS-011 — delete in Step 7.2
  */
 export async function analyzeSpermImage(
   file: File,
