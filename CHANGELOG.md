@@ -255,6 +255,46 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0009 — CORRECTION: CL-0007/CL-0008 commit references, test script path, and test additions
+
+- **Date (UTC):** 2026-11-23T22:30:00Z
+- **Author:** Kilo (nvidia/nemotron-3-ultra-550b-a55b)
+- **Phase / Step:** Phase 0 / Step 0.3c (re-review)
+- **Issue IDs:** ISS-011, ISS-014, ISS-019 (follow-up)
+- **Type:** Correction
+- **Summary:** 
+  1. **Commit references corrected:** CL-0007 cited commits `d2db783` and `f4d85b4` which do not exist. The real commits are `b199279` (CL-0006) and `77ca9ca` (CL-0007/CL-0008). CL-0007 was edited after the fact, violating the append-only rule.
+  2. **Test script path fixed:** `tools/check_changelog.test.sh` now uses `SCRIPT="$(cd "$(dirname "$0")" && pwd)/check_changelog.sh"` instead of hardcoded `/Users/syedrauf/...` paths. Each test checks for exact exit code (1 or 0), not just "non-zero".
+  3. **Added frontend tests:** 
+     - `frontend/src/server/semenDemoGate.test.ts` (4 tests): POST /v1/semen/analyze, /v1/semen/calibration, /v1/semen/sessions, and GET /v1/config/semen-gate each return 404 with `code: DEMO_MODE_DISABLED` when DEMO_MODE is off.
+     - `frontend/src/utils/semenReport.test.ts` (1 additional test): Report builders contain no heuristic fields (no "Estimated head length: \d", "Pyriform", etc.) when both flags are false.
+  4. **Added CI step:** `bash tools/check_changelog.test.sh` added to `check_changelog` job in deploy.yml.
+  5. **New test count:** Frontend 24 tests (was 19), .NET 171 tests unchanged.
+- **Why:** Correct inaccurate commit references, remove hardcoded paths from test script, add missing server-gating and report tests, and record real UTC times from git log.
+- **Files changed:**
+  - `tools/check_changelog.test.sh` — relative path via `$0`, exact exit code checks
+  - `.github/workflows/deploy.yml` — added `bash tools/check_changelog.test.sh` step
+  - `frontend/src/server/semenDemoGate.test.ts` — new (4 tests for 404 gates)
+  - `frontend/src/utils/semenReport.test.ts` — added 1 test for heuristic field absence
+- **Behaviour before → after:** Test script works on any machine; CI runs script test; server-gating and report tests added; accurate commit references.
+- **Contract / schema / API changes:** None
+- **Database migration:** none
+- **Config / env / infra changes:** CI job now runs check_changelog.test.sh
+- **Tests run:**
+  - `cd frontend && bun test` → 24 tests passed (19 existing + 4 new semenDemoGate + 1 new semenReport)
+  - `dotnet test tests/Penancia.S.Tests -c Release` → 171 passed, 0 failed
+  - `bash tools/check_changelog.test.sh` → All 4 tests passed (exact exit codes verified)
+- **Known gaps / risks:**
+  - Old commits `16f1582` and `2f6c73e` still serve Manus files/ folder to anyone who has the SHA (GitHub retains them). Only GitHub Support can purge them, or the repository can be made private.
+  - Frontend tests still lack integration tests for Sahatna 404 handling (component tests require testing-library setup).
+  - CL-0007 was edited after the fact; this violates the append-only rule. CL-0008 is the correction, not a replacement.
+  - The bun.lock re-sync to esbuild 0.28.2 was intentional (package.json already required 0.28.2; lock file was out of date).
+- **Rollback:** Revert the file changes
+- **Follow-ups for the next developer or model:** Phase 0 complete. Proceed to Phase 1 (data foundation: calibration and media facts)
+- **Commit(s):** 77ca9ca (CL-0007/CL-0008), pending for this CL-0009 entry
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did

@@ -4,6 +4,13 @@
 
 set -euo pipefail
 
+SCRIPT="$(cd "$(dirname "$0")" && pwd)/check_changelog.sh"
+
+if [ ! -f "$SCRIPT" ]; then
+  echo "FAIL: check_changelog.sh not found at $SCRIPT"
+  exit 1
+fi
+
 TEST_DIR=$(mktemp -d)
 echo "Test directory: $TEST_DIR"
 
@@ -31,11 +38,15 @@ git commit -q -m "Add new source file"
 
 HEAD_SHA=$(git rev-parse HEAD)
 
-if bash /Users/syedrauf/Desktop/Azure\ cop/my-agent/tools/check_changelog.sh "$BASE_SHA" "$HEAD_SHA" 2>/dev/null; then
-  echo "FAIL: Expected exit 1, got 0"
-  exit 1
-else
+set +e
+bash "$SCRIPT" "$BASE_SHA" "$HEAD_SHA" > /dev/null 2>&1
+EXIT_CODE=$?
+set -e
+if [ "$EXIT_CODE" -eq 1 ]; then
   echo "PASS: Exited 1 as expected"
+else
+  echo "FAIL: Expected exit 1, got $EXIT_CODE"
+  exit 1
 fi
 
 # Reset for next test
@@ -50,10 +61,14 @@ git commit -q -m "Add new source file with CHANGELOG"
 
 HEAD_SHA=$(git rev-parse HEAD)
 
-if bash /Users/syedrauf/Desktop/Azure\ cop/my-agent/tools/check_changelog.sh "$BASE_SHA" "$HEAD_SHA" 2>/dev/null; then
+set +e
+bash "$SCRIPT" "$BASE_SHA" "$HEAD_SHA" > /dev/null 2>&1
+EXIT_CODE=$?
+set -e
+if [ "$EXIT_CODE" -eq 0 ]; then
   echo "PASS: Exited 0 as expected"
 else
-  echo "FAIL: Expected exit 0, got 1"
+  echo "FAIL: Expected exit 0, got $EXIT_CODE"
   exit 1
 fi
 
@@ -66,10 +81,14 @@ git commit -q -m "Only CHANGELOG"
 
 HEAD_SHA=$(git rev-parse HEAD)
 
-if bash /Users/syedrauf/Desktop/Azure\ cop/my-agent/tools/check_changelog.sh "$BASE_SHA" "$HEAD_SHA" 2>/dev/null; then
+set +e
+bash "$SCRIPT" "$BASE_SHA" "$HEAD_SHA" > /dev/null 2>&1
+EXIT_CODE=$?
+set -e
+if [ "$EXIT_CODE" -eq 0 ]; then
   echo "PASS: Exited 0 as expected"
 else
-  echo "FAIL: Expected exit 0, got 1"
+  echo "FAIL: Expected exit 0, got $EXIT_CODE"
   exit 1
 fi
 
@@ -82,11 +101,15 @@ git commit -q -m "Change config"
 
 HEAD_SHA=$(git rev-parse HEAD)
 
-if bash /Users/syedrauf/Desktop/Azure\ cop/my-agent/tools/check_changelog.sh "$BASE_SHA" "$HEAD_SHA" 2>/dev/null; then
-  echo "FAIL: Expected exit 1, got 0"
-  exit 1
-else
+set +e
+bash "$SCRIPT" "$BASE_SHA" "$HEAD_SHA" > /dev/null 2>&1
+EXIT_CODE=$?
+set -e
+if [ "$EXIT_CODE" -eq 1 ]; then
   echo "PASS: Exited 1 as expected"
+else
+  echo "FAIL: Expected exit 1, got $EXIT_CODE"
+  exit 1
 fi
 
 # Cleanup

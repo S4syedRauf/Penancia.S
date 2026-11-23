@@ -37,6 +37,9 @@ jobs:
       - name: Run CHANGELOG check
         run: bash tools/check_changelog.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
 
+      - name: Run CHANGELOG check script test
+        run: bash tools/check_changelog.test.sh
+
   # ============================================================
   # 1. Build & Test Backend (.NET)
   # ============================================================

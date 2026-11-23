@@ -125,3 +125,18 @@ test('fixture runs are explicitly identified as demonstrations', () => {
   assert.equal(report.source.kind, 'Demonstration fixture');
   assert.match(generateSemenReportHtml(report), /not a patient result/i);
 });
+
+test('report builders contain no heuristic fields when both flags are false', () => {
+  const report = buildSemenReport(run, analysis, 'en');
+  const html = generateSemenReportHtml(report);
+  
+  // Check that heuristic fields are not shown as measured values
+  assert.doesNotMatch(html, /Estimated head length: \d/);
+  assert.doesNotMatch(html, /Estimated head width: \d/);
+  assert.doesNotMatch(html, /Length\/width: \d/);
+  assert.doesNotMatch(html, /Acrosome coverage: \d/);
+  assert.doesNotMatch(html, /Pyriform/);
+  
+  // Check that "Not measured" or "Not available" is shown instead
+  assert.match(html, /Not measured|Not available/);
+});
