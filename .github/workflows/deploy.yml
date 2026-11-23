@@ -101,7 +101,7 @@ jobs:
     needs: [build_test_backend, build_test_frontend]
     runs-on: ubuntu-latest
     name: Build & Push Docker Images
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && secrets.AZURE_CREDENTIALS != '' && secrets.ACR_USERNAME != '' && secrets.ACR_PASSWORD != ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -119,7 +119,7 @@ jobs:
           echo "workflow-tag=$TAG" >> $GITHUB_OUTPUT
           echo "web-tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Build and push API image
+      - name: Login to ACR
         uses: azure/docker-login@v1
         with:
           login-server: ${{ env.ACR_NAME }}.azurecr.io
@@ -164,7 +164,7 @@ jobs:
     needs: build_push_images
     runs-on: ubuntu-latest
     name: Deploy Infrastructure (Bicep)
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && secrets.AZURE_CREDENTIALS != '' && secrets.ENTRA_WEB_CLIENT_ID != ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -185,6 +185,12 @@ jobs:
             webImageTag=${{ env.WEB_IMAGE_TAG }}
           deploymentMode: Incremental
 
+      - name: Get web Container App FQDN
+        id: get-web-fqdn
+        run: |
+          FQDN=$(az containerapp show --name ${{ env.WEB_CONTAINER_APP }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "fqdn=$FQDN" >> $GITHUB_OUTPUT
+
       - name: Configure Easy Auth (web-auth.bicep)
         uses: azure/arm-deploy@v1
         with:
@@ -195,12 +201,6 @@ jobs:
             entraWebClientId=${{ secrets.ENTRA_WEB_CLIENT_ID }}
           deploymentMode: Incremental
 
-      - name: Get web Container App FQDN
-        id: get-web-fqdn
-        run: |
-          FQDN=$(az containerapp show --name ${{ env.WEB_CONTAINER_APP }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
-          echo "fqdn=$FQDN" >> $GITHUB_OUTPUT
-
   # ============================================================
   # 5. Deploy Frontend to Azure Static Web Apps
   # ============================================================
@@ -208,7 +208,7 @@ jobs:
     needs: build_test_frontend
     runs-on: ubuntu-latest
     name: Deploy Frontend to Azure Static Web Apps
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && secrets.AZURE_STATIC_WEB_APPS_API_TOKEN != ''
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -260,7 +260,7 @@ jobs:
     needs: [deploy_infrastructure, deploy_frontend]
     runs-on: ubuntu-latest
     name: Verify Deployment
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && secrets.AZURE_CREDENTIALS != ''
     steps:
       - name: Azure Login
         uses: azure/login@v2
