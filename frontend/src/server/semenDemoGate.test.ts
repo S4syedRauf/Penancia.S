@@ -3,33 +3,88 @@ import type { AddressInfo } from 'node:net';
 import { after, before, test } from 'node:test';
 import express, { type Express } from 'express';
 import type { Server } from 'node:http';
+import { registerSemenDemoRoutes } from './semenDemoRoutes.js';
+import { createApp } from '../../server.js';
+import { createInitialStoreData, type PanaceaStoreData } from './persistenceStore.js';
 
-// Set DEMO_MODE to false BEFORE importing anything
+// Ensure DEMO_MODE is false in tests
 process.env.DEMO_MODE = 'false';
 delete process.env.VITE_DEMO_MODE;
 process.env.AUTH_REQUIRE_ENTRA = 'false';
 process.env.PERSISTENCE_MODE = 'memory';
 
-let app: Express;
-let server: Server;
-let baseUrl: string;
+function createMockDeps(demoMode: boolean) {
+  let store: PanaceaStoreData = createInitialStoreData();
+
+  return {
+    demoMode,
+    loadStore: () => store,
+    saveStore: (data: PanaceaStoreData) => {
+      store = data;
+    },
+    appendAuditAndOutbox: (data: PanaceaStoreData, event: any) => {
+      data.auditEvents.push({
+        id: 'mock-audit',
+        timestamp: new Date().toISOString(),
+        ...event,
+      });
+    },
+  };
+}
+
+let disabledApp: Express;
+let disabledServer: Server;
+let disabledBaseUrl: string;
+
+let enabledApp: Express;
+let enabledServer: Server;
+let enabledBaseUrl: string;
+
+let serverApp: Express;
+let fullServer: Server;
+let fullServerBaseUrl: string;
 
 before(async () => {
-  const { createTestApp } = await import('./testApp.js');
-  app = createTestApp();
-  server = app.listen(0, '127.0.0.1');
-  await new Promise<void>((resolve) => server.once('listening', resolve));
-  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  // 1. App with demoMode: false
+  disabledApp = express();
+  disabledApp.use(express.json());
+  registerSemenDemoRoutes(disabledApp, createMockDeps(false));
+  disabledServer = disabledApp.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => disabledServer.once('listening', resolve));
+  disabledBaseUrl = `http://127.0.0.1:${(disabledServer.address() as AddressInfo).port}`;
+
+  // 2. App with demoMode: true
+  enabledApp = express();
+  enabledApp.use(express.json());
+  registerSemenDemoRoutes(enabledApp, createMockDeps(true));
+  enabledServer = enabledApp.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => enabledServer.once('listening', resolve));
+  enabledBaseUrl = `http://127.0.0.1:${(enabledServer.address() as AddressInfo).port}`;
+
+  // 3. Server app as created and configured by server.ts
+  serverApp = createApp();
+  fullServer = serverApp.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve) => fullServer.once('listening', resolve));
+  fullServerBaseUrl = `http://127.0.0.1:${(fullServer.address() as AddressInfo).port}`;
 });
 
 after(async () => {
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
+  await Promise.all([
+    new Promise<void>((resolve, reject) =>
+      disabledServer.close((error) => (error ? reject(error) : resolve())),
+    ),
+    new Promise<void>((resolve, reject) =>
+      enabledServer.close((error) => (error ? reject(error) : resolve())),
+    ),
+    new Promise<void>((resolve, reject) =>
+      fullServer.close((error) => (error ? reject(error) : resolve())),
+    ),
+  ]);
 });
 
-test('POST /v1/semen/analyze returns 404 DEMO_MODE_DISABLED when DEMO_MODE is off', async () => {
-  const res = await fetch(`${baseUrl}/v1/semen/analyze`, {
+// Tests for demoMode: false -> all 4 routes return 404 with DEMO_MODE_DISABLED
+test('With demoMode: false, POST /v1/semen/analyze returns 404 with DEMO_MODE_DISABLED', async () => {
+  const res = await fetch(`${disabledBaseUrl}/v1/semen/analyze`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ sessionId: 'test' }),
@@ -39,8 +94,8 @@ test('POST /v1/semen/analyze returns 404 DEMO_MODE_DISABLED when DEMO_MODE is of
   assert.equal(body.code, 'DEMO_MODE_DISABLED');
 });
 
-test('POST /v1/semen/calibration returns 404 DEMO_MODE_DISABLED when DEMO_MODE is off', async () => {
-  const res = await fetch(`${baseUrl}/v1/semen/calibration`, {
+test('With demoMode: false, POST /v1/semen/calibration returns 404 with DEMO_MODE_DISABLED', async () => {
+  const res = await fetch(`${disabledBaseUrl}/v1/semen/calibration`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ detectedLinesCount: 10 }),
@@ -50,8 +105,8 @@ test('POST /v1/semen/calibration returns 404 DEMO_MODE_DISABLED when DEMO_MODE i
   assert.equal(body.code, 'DEMO_MODE_DISABLED');
 });
 
-test('POST /v1/semen/sessions returns 404 DEMO_MODE_DISABLED when DEMO_MODE is off', async () => {
-  const res = await fetch(`${baseUrl}/v1/semen/sessions`, {
+test('With demoMode: false, POST /v1/semen/sessions returns 404 with DEMO_MODE_DISABLED', async () => {
+  const res = await fetch(`${disabledBaseUrl}/v1/semen/sessions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ sessionId: 'test', runId: 'test' }),
@@ -61,8 +116,25 @@ test('POST /v1/semen/sessions returns 404 DEMO_MODE_DISABLED when DEMO_MODE is o
   assert.equal(body.code, 'DEMO_MODE_DISABLED');
 });
 
-test('GET /v1/config/semen-gate returns 404 DEMO_MODE_DISABLED when DEMO_MODE is off', async () => {
-  const res = await fetch(`${baseUrl}/v1/config/semen-gate`);
+test('With demoMode: false, GET /v1/config/semen-gate returns 404 with DEMO_MODE_DISABLED', async () => {
+  const res = await fetch(`${disabledBaseUrl}/v1/config/semen-gate`);
+  assert.equal(res.status, 404);
+  const body = await res.json();
+  assert.equal(body.code, 'DEMO_MODE_DISABLED');
+});
+
+// Test for demoMode: true -> GET /v1/config/semen-gate returns 200
+test('With demoMode: true, GET /v1/config/semen-gate returns 200', async () => {
+  const res = await fetch(`${enabledBaseUrl}/v1/config/semen-gate`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.demo, true);
+  assert.equal(typeof body.minResolutionWidth, 'number');
+});
+
+// Test verifying server.ts wires registerSemenDemoRoutes with DEMO_MODE
+test('server.ts calls registerSemenDemoRoutes with DEMO_MODE (production returns 404)', async () => {
+  const res = await fetch(`${fullServerBaseUrl}/v1/config/semen-gate`);
   assert.equal(res.status, 404);
   const body = await res.json();
   assert.equal(body.code, 'DEMO_MODE_DISABLED');

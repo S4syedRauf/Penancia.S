@@ -140,3 +140,17 @@ test('report builders contain no heuristic fields when both flags are false', ()
   // Check that "Not measured" or "Not available" is shown instead
   assert.match(html, /Not measured|Not available/);
 });
+
+test('report text and HTML contain no TZI, Acrosome, L/W, Pyriform or µm/px anywhere', () => {
+  for (const lang of ['en', 'ar'] as const) {
+    const report = buildSemenReport(run, analysis, lang);
+    const reportText = JSON.stringify(report);
+    const html = generateSemenReportHtml(report);
+    const forbidden = ['TZI', 'Acrosome', 'L/W', 'Pyriform', 'µm/px'];
+    for (const str of forbidden) {
+      assert.ok(!reportText.includes(str), `Report text (${lang}) contains forbidden string: ${str}`);
+      assert.ok(!html.includes(str), `Report HTML (${lang}) contains forbidden string: ${str}`);
+    }
+  }
+});
+

@@ -100,13 +100,13 @@ export function buildSemenReport(
         ? `تم قياس أكبر بنية أمامية في هذه الصورة. التصنيف الشكلي المبدئي هو ${analysis.morphologyCategory}. هذا وصف آلي لبنية واحدة وليس تصنيفاً سريرياً للحيوانات المنوية.`
         : `The largest segmented foreground structure in this image was measured. Its preliminary shape category is ${analysis.morphologyCategory}. This is an automated description of one structure, not a clinical sperm classification.`)
       : (isAr
-        ? 'فحص جودة الصورة اكتمل. الشكل، الأكروسوم، نسبة الطول للعرض، و TZI غير مقاسة في هذا الفحص التمهيدي.'
-        : 'Image quality gate passed. Morphology, acrosome, L/W ratio, and TZI are not measured in this pre-screen.'),
+        ? 'فحص جودة الصورة اكتمل. القياسات الخلوية غير مقاسة في هذا الفحص التمهيدي.'
+        : 'Image quality gate passed. Cell morphology and cellular dimensions are not reported in this preliminary pre-screen.'),
     limitations: [
       isAr ? 'إطار واحد فقط؛ لم يتم إجراء عدّ منهجي عبر حقول متعددة.' : 'Single-frame analysis only; no systematic count across multiple fields was performed.',
       isAr ? 'لا يمكن قياس التركيز أو الحركة أو الحيوية من هذا الفحص.' : 'Concentration, motility, and vitality cannot be measured by this screening pass.',
       isAr ? 'الأبعاد تقريبية وتعتمد على معايرة بصرية صحيحة.' : 'Dimensions are estimates and depend on correct optical calibration.',
-      isAr ? 'فئات الشكل والأكروسوم تقديرات هندسية ولونية غير معتمدة سريرياً.' : 'Shape and acrosome categories are unvalidated geometry/color estimates, not clinical findings.',
+      isAr ? 'فئات الشكل تقديرات هندسية ولونية غير معتمدة سريرياً.' : 'Shape categories are unvalidated geometry/color estimates, not clinical findings.',
     ],
     nextStep: isAr
       ? 'للحصول على نتيجة سريرية، احجز تحليل سائل منوي معتمداً لدى مختبر مرخص.'

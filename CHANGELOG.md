@@ -295,6 +295,48 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0010 — Extract semen demo routes, rewrite semenDemoGate tests, assert clean report strings
+
+- **Date (UTC):** 2026-11-23T16:11:08Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 0 / Step 0.3c (re-review 3)
+- **Issue IDs:** ISS-011, ISS-014, ISS-019 (follow-up)
+- **Type:** Refactor & Fix
+- **Summary:**
+  1. **Note on previous entry date:** CL-0009's recorded date (`2026-11-23T22:30:00Z`) was incorrect / in the future; the actual git commit `1c82804` occurred at `2026-11-23T21:41:08+05:30` which is `2026-11-23T16:11:08Z` UTC.
+  2. **Deleted testApp.ts:** Removed `frontend/src/server/testApp.ts` which duplicated route definitions and masked changes in `server.ts`.
+  3. **Extracted semen demo routes:** Moved the 4 semen demo routes (`/v1/config/semen-gate`, `/v1/semen/calibration`, `/v1/semen/sessions`, `/v1/semen/analyze`) out of `frontend/server.ts` into `frontend/src/server/semenDemoRoutes.ts`. Exported `registerSemenDemoRoutes(app, { demoMode, loadStore, saveStore, appendAuditAndOutbox })`. Updated `server.ts` to call `registerSemenDemoRoutes(app, { demoMode: DEMO_MODE, loadStore, saveStore, appendAuditAndOutbox })`.
+  4. **Rewrote semenDemoGate tests:** `frontend/src/server/semenDemoGate.test.ts` now tests `registerSemenDemoRoutes` directly and verifies `server.ts` wiring:
+     - With `demoMode: false`, all 4 routes return 404 with `code: DEMO_MODE_DISABLED`.
+     - With `demoMode: true`, `GET /v1/config/semen-gate` returns 200 with `{ demo: true, ... }`.
+     - Tested `server.ts`'s exported app to verify it wires `DEMO_MODE` to `registerSemenDemoRoutes` (returning 404 in production/default).
+     - Proved test validity by temporarily forcing `demoMode: true` in `server.ts`'s call, verifying that the test failed (`200 !== 404`), and reverting back to `DEMO_MODE`.
+  5. **Negative string assertions in semenReport tests:** In `frontend/src/utils/semenReport.test.ts`, added assertions ensuring that both the report JSON text and HTML output contain no "TZI", "Acrosome", "L/W", "Pyriform", or "µm/px" anywhere. Cleaned up fallback strings in `frontend/src/utils/semenReport.ts` to avoid leaking these tokens.
+- **Why:** Ensure tests exercise actual production route implementations without duplicate route mocks, verify semen gate enforcement, and ensure reports cannot leak forbidden heuristic tokens.
+- **Files changed:**
+  - `frontend/src/server/testApp.ts` — deleted
+  - `frontend/src/server/semenDemoRoutes.ts` — new, exports registerSemenDemoRoutes
+  - `frontend/server.ts` — calls registerSemenDemoRoutes with DEMO_MODE, exports createApp
+  - `frontend/src/server/semenDemoGate.test.ts` — rewritten to test registerSemenDemoRoutes and server.ts integration
+  - `frontend/src/utils/semenReport.ts` — cleaned up summary & limitation text to avoid forbidden strings
+  - `frontend/src/utils/semenReport.test.ts` — added assertion for absence of "TZI", "Acrosome", "L/W", "Pyriform", "µm/px"
+  - `CHANGELOG.md` — added CL-0010
+- **Behaviour before → after:** Server tests now test the actual route module and `server.ts` app directly; test fails if `server.ts` enables demo mode; semen reports strictly exclude forbidden tokens.
+- **Contract / schema / API changes:** None
+- **Database migration:** none
+- **Config / env / infra changes:** None
+- **Tests run:**
+  - `cd frontend && bun run lint` → passed (exit 0)
+  - `cd frontend && bun test` → 27 tests passed across 7 files
+  - `cd frontend && bun run build` → built successfully
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed (exit 0)
+- **Known gaps / risks:** None
+- **Rollback:** Revert the file changes
+- **Follow-ups for the next developer or model:** Phase 0 complete.
+- **Commit(s):** pending for this CL-0010 entry
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did
