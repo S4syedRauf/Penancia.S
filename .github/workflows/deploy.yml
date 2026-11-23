@@ -9,7 +9,21 @@ on:
     branches:
       - main
 
+env:
+  AZURE_RESOURCE_GROUP: rg-penancias-dev
+  AZURE_LOCATION: uaenorth
+  ACR_NAME: acrpenancias
+  CONTAINER_APP_ENV: cae-penancias
+  API_CONTAINER_APP: penancias-api
+  WORKFLOW_CONTAINER_APP: penancias-workflow
+  WEB_CONTAINER_APP: penancias-web
+  GOTENBERG_CONTAINER_APP: penancias-pdf
+  STATIC_WEB_APP_NAME: icy-sea-01859df0f
+
 jobs:
+  # ============================================================
+  # 1. Build & Test Backend (.NET)
+  # ============================================================
   build_test_backend:
     runs-on: ubuntu-latest
     name: Build & Test Backend (.NET)
@@ -31,6 +45,9 @@ jobs:
       - name: Run tests
         run: dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj --no-build -c Release --verbosity normal
 
+  # ============================================================
+  # 2. Build & Test Frontend
+  # ============================================================
   build_test_frontend:
     runs-on: ubuntu-latest
     name: Build & Test Frontend
@@ -60,3 +77,151 @@ jobs:
       - name: Build Frontend Production Artifacts
         working-directory: frontend
         run: bun run build
+
+  # ============================================================
+  # 3. Build & Push Docker Images (requires secrets)
+  # ============================================================
+  build_push_images:
+    needs: [build_test_backend, build_test_frontend]
+    runs-on: ubuntu-latest
+    name: Build & Push Docker Images
+    if: github.event_name == 'push' && secrets.AZURE_CREDENTIALS != '' && secrets.ACR_USERNAME != '' && secrets.ACR_PASSWORD != ''
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Set image tags
+        id: set-tags
+        run: |
+          TAG=$(date -u +'%Y%m%d-%H%M%S')-${{ github.sha::8 }}
+          echo "api-tag=$TAG" >> $GITHUB_OUTPUT
+          echo "workflow-tag=$TAG" >> $GITHUB_OUTPUT
+          echo "web-tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Login to ACR
+        uses: azure/docker-login@v1
+        with:
+          login-server: ${{ env.ACR_NAME }}.azurecr.io
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Build API image
+        run: |
+          docker build -t ${{ env.ACR_NAME }}.azurecr.io/penancias-api:${{ steps.set-tags.outputs.api-tag }} -f Dockerfile .
+
+      - name: Push API image
+        run: |
+          docker push ${{ env.ACR_NAME }}.azurecr.io/penancias-api:${{ steps.set-tags.outputs.api-tag }}
+
+      - name: Build Workflow image
+        run: |
+          docker build -t ${{ env.ACR_NAME }}.azurecr.io/penancias-workflow:${{ steps.set-tags.outputs.workflow-tag }} -f Dockerfile.workflow .
+
+      - name: Push Workflow image
+        run: |
+          docker push ${{ env.ACR_NAME }}.azurecr.io/penancias-workflow:${{ steps.set-tags.outputs.workflow-tag }}
+
+      - name: Build Web image
+        working-directory: frontend
+        run: |
+          docker build -t ${{ env.ACR_NAME }}.azurecr.io/penancias-web:${{ steps.set-tags.outputs.web-tag }} -f Dockerfile .
+
+      - name: Push Web image
+        run: |
+          docker push ${{ env.ACR_NAME }}.azurecr.io/penancias-web:${{ steps.set-tags.outputs.web-tag }}
+
+  # ============================================================
+  # 4. Deploy Infrastructure (Bicep) (requires secrets)
+  # ============================================================
+  deploy_infrastructure:
+    needs: build_push_images
+    runs-on: ubuntu-latest
+    name: Deploy Infrastructure (Bicep)
+    if: github.event_name == 'push' && secrets.AZURE_CREDENTIALS != '' && secrets.ENTRA_WEB_CLIENT_ID != ''
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy Bicep infrastructure
+        uses: azure/arm-deploy@v1
+        with:
+          resourceGroupName: ${{ env.AZURE_RESOURCE_GROUP }}
+          template: ./infra/main.bicep
+          parameters: ./infra/parameters.json
+          deploymentMode: Incremental
+
+      - name: Get web Container App FQDN
+        id: get-web-fqdn
+        run: |
+          FQDN=$(az containerapp show --name ${{ env.WEB_CONTAINER_APP }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query properties.configuration.ingress.fqdn -o tsv)
+          echo "fqdn=$FQDN" >> $GITHUB_OUTPUT
+
+      - name: Configure Easy Auth (web-auth.bicep)
+        uses: azure/arm-deploy@v1
+        with:
+          resourceGroupName: ${{ env.AZURE_RESOURCE_GROUP }}
+          template: ./infra/web-auth.bicep
+          parameters: webFqdn=${{ steps.get-web-fqdn.outputs.fqdn }} entraWebClientId=${{ secrets.ENTRA_WEB_CLIENT_ID }}
+          deploymentMode: Incremental
+
+  # ============================================================
+  # 5. Deploy Frontend to Azure Static Web Apps (requires secrets)
+  # ============================================================
+  deploy_frontend:
+    needs: build_test_frontend
+    runs-on: ubuntu-latest
+    name: Deploy Frontend to Azure Static Web Apps
+    if: github.event_name == 'push' && secrets.AZURE_STATIC_WEB_APPS_API_TOKEN != ''
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install Frontend Dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile || bun install
+
+      - name: Build Frontend Production Artifacts
+        working-directory: frontend
+        run: bun run build
+
+      - name: Deploy to Azure Static Web Apps
+        id: builddeploy
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: "/frontend"
+          output_location: "dist"
+
+  # ============================================================
+  # 6. Close Pull Request Job
+  # ============================================================
+  close_pull_request_job:
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    name: Close Pull Request Job
+    steps:
+      - name: Close SWA Environment
+        id: closepullrequest
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
+          action: "close"
