@@ -21,65 +21,63 @@ env:
   STATIC_WEB_APP_NAME: icy-sea-01859df0f
 
 jobs:
-# ============================================================
-# 0. CHANGELOG Enforcement
-# ============================================================
-check_changelog:
-  runs-on: ubuntu-latest
-  name: Enforce CHANGELOG Entry
-  if: github.event_name == 'pull_request'
-  steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+  # ============================================================
+  # 0. CHANGELOG Enforcement
+  # ============================================================
+  check_changelog:
+    runs-on: ubuntu-latest
+    name: Enforce CHANGELOG Entry
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Run CHANGELOG check
-      run: bash tools/check_changelog.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
+      - name: Run CHANGELOG check
+        run: bash tools/check_changelog.sh "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}"
 
-    - name: Run CHANGELOG check script test
-      run: bash tools/check_changelog.test.sh
+      - name: Run CHANGELOG check script test
+        run: bash tools/check_changelog.test.sh
 
-# ============================================================
-# 0b. Validate Bicep & Role IDs
-# ============================================================
-validate_bicep:
-  runs-on: ubuntu-latest
-  name: Validate Bicep & Role IDs
-  if: github.event_name == 'pull_request'
-  steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+  # ============================================================
+  # 0b. Validate Bicep & Role IDs
+  # ============================================================
+  validate_bicep:
+    runs-on: ubuntu-latest
+    name: Validate Bicep & Role IDs
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install Azure CLI & Bicep
-      run: |
-        curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
-        az bicep install
+      - name: Install Azure CLI & Bicep
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az bicep install
 
-    - name: Validate Bicep (build)
-      run: az bicep build --file infra/main.bicep --outdir /tmp/bicep_out
+      - name: Validate Bicep build & warnings
+        shell: bash
+        run: |
+          set -eo pipefail
+          mkdir -p /tmp/bicep_out
+          az bicep build --file infra/main.bicep --outdir /tmp/bicep_out 2>&1 | tee /tmp/bicep_build.log
+          WARNING_COUNT=$(grep -c " : Warning " /tmp/bicep_build.log || true)
+          echo "Bicep warnings: $WARNING_COUNT"
+          BASELINE=$(tr -d '[:space:]' < infra/bicep-warning-baseline.txt)
+          echo "Baseline: $BASELINE"
+          if [ "$WARNING_COUNT" -gt "$BASELINE" ]; then
+            echo "ERROR: Bicep warning count ($WARNING_COUNT) exceeds baseline ($BASELINE). New warnings introduced."
+            grep " : Warning " /tmp/bicep_build.log
+            exit 1
+          fi
+          echo "Bicep warning count OK (<= $BASELINE)"
 
-    - name: Check Bicep warnings count
-      run: |
-        # Capture warnings from build
-        az bicep build --file infra/main.bicep --outdir /tmp/bicep_out 2>&1 | tee /tmp/bicep_build.log
-        # Count warnings (lines containing "Warning BCP")
-        WARNING_COUNT=$(grep -c "Warning BCP" /tmp/bicep_build.log || true)
-        echo "Bicep warnings: $WARNING_COUNT"
-        # Baseline is 5 warnings from main branch (pre-existing)
-        # Fail if NEW warnings introduced (count > 5)
-        if [ "$WARNING_COUNT" -gt 5 ]; then
-          echo "ERROR: Bicep warning count ($WARNING_COUNT) exceeds baseline (5). New warnings introduced."
-          grep "Warning BCP" /tmp/bicep_build.log
-          exit 1
-        fi
-        echo "Bicep warning count OK (<= 5)"
+      - name: Validate Role IDs
+        run: bash tools/check_role_ids.sh
 
-    - name: Validate Role IDs
-      run: bash tools/check_role_ids.sh
-
-    - name: Run Role ID check tests
-      run: bash tools/check_role_ids.test.sh
+      - name: Run Role ID check tests
+        run: bash tools/check_role_ids.test.sh
 
 # ============================================================
 # 1. Build & Test Backend (.NET)

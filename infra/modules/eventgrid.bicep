@@ -3,9 +3,6 @@ targetScope = 'resourceGroup'
 @description('Storage account to create system topic for')
 param storageAccountName string
 
-@description('Storage account resource ID')
-param storageAccountId string
-
 @description('Storage queue name for blob created events')
 param blobCreatedQueueName string
 
@@ -14,6 +11,11 @@ param tags object
 
 @description('Location for resources')
 param location string = resourceGroup().location
+
+// Existing reference to the storage account for scope, topic source, and role assignment
+resource st 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: storageAccountName
+}
 
 // Event Grid System Topic for Storage Account blob events
 resource eventGridTopic 'Microsoft.EventGrid/systemTopics@2025-02-15' = {
@@ -25,21 +27,19 @@ resource eventGridTopic 'Microsoft.EventGrid/systemTopics@2025-02-15' = {
   }
   properties: {
     topicType: 'Microsoft.Storage.StorageAccounts'
-    source: storageAccountId
+    source: st.id
   }
 }
 
-// Storage queue service (parent for queues)
-resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = {
-  parent: resourceId('Microsoft.Storage/storageAccounts', storageAccountName)
-  name: 'default'
-}
-
-// Storage queue for blob created events
-resource blobCreatedQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = {
-  parent: queueService
-  name: blobCreatedQueueName
-  properties: {}
+// Role assignment: Event Grid system topic's managed identity -> Storage Queue Data Message Sender on storage account
+resource eventGridQueueSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(st.id, eventGridTopic.id, 'eventgrid-queue-sender')
+  scope: st
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a') // Storage Queue Data Message Sender
+    principalId: eventGridTopic.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
 }
 
 // Event Grid subscription: blob created in quarantine container -> storage queue
@@ -49,7 +49,7 @@ resource egSubscriptionBlobCreated 'Microsoft.EventGrid/systemTopics/eventSubscr
   parent: eventGridTopic
   name: 'blob-created-quarantine-subscription'
   dependsOn: [
-    blobCreatedQueue
+    eventGridQueueSender
   ]
   properties: {
     deliveryWithResourceIdentity: {
@@ -59,7 +59,7 @@ resource egSubscriptionBlobCreated 'Microsoft.EventGrid/systemTopics/eventSubscr
       destination: {
         endpointType: 'StorageQueue'
         properties: {
-          resourceId: storageAccountId
+          resourceId: st.id
           queueName: blobCreatedQueueName
         }
       }
@@ -72,17 +72,6 @@ resource egSubscriptionBlobCreated 'Microsoft.EventGrid/systemTopics/eventSubscr
       enableAdvancedFilteringOnArrays: false
     }
     eventDeliverySchema: 'CloudEventSchemaV1_0'
-  }
-}
-
-// Role assignment: Event Grid system topic's managed identity -> Storage Queue Data Message Sender on storage account
-resource eventGridQueueSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageAccountId, 'eventgrid-queue-sender')
-  scope: resourceId('Microsoft.Storage/storageAccounts', storageAccountName)
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'c6a89b2d-59bc-44d0-9896-0f6e12d7b80a') // Storage Queue Data Message Sender
-    principalId: eventGridTopic.identity.principalId
-    principalType: 'ServicePrincipal'
   }
 }
 

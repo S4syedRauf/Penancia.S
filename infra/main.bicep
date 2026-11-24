@@ -102,16 +102,23 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 // 3. Storage Module: Clinical Media & Results + Durable Functions State
 //    6 private containers: raw-video, raw-images, results, reports, quarantine, derived
 //    CORS configured for web origin, lifecycle policy deletes quarantine after 1 day
+//    2 queues: blob-created-events, scan-result-events
 // ---------------------------------------------------------------------------
+var mediaStorageName = 'st${prefix}'
+
 module storageModule 'modules/storage.bicep' = {
   name: 'storage-deployment'
   params: {
     prefix: prefix
-    environment: environment
+    mediaStorageName: mediaStorageName
     webOrigin: webOrigin
     tags: commonTags
     location: location
   }
+}
+
+resource mediaStorageRef 'Microsoft.Storage/storageAccounts@2023-05-01' existing = {
+  name: mediaStorageName
 }
 
 // ---------------------------------------------------------------------------
@@ -122,8 +129,8 @@ module storageModule 'modules/storage.bicep' = {
 module defenderModule 'modules/defender.bicep' = {
   name: 'defender-deployment'
   params: {
-    storageAccountName: storageModule.outputs.mediaStorageName
-    scanResultsTopicId: '' // Will be set by defender module's own topic
+    storageAccountName: mediaStorageName
+    scanResultQueueName: 'scan-result-events'
     malwareScanCapGB: malwareScanCapGB
     tags: commonTags
   }
@@ -138,8 +145,7 @@ module defenderModule 'modules/defender.bicep' = {
 module eventGridModule 'modules/eventgrid.bicep' = {
   name: 'eventgrid-deployment'
   params: {
-    storageAccountName: storageModule.outputs.mediaStorageName
-    storageAccountId: storageModule.outputs.mediaStorageId
+    storageAccountName: mediaStorageName
     blobCreatedQueueName: 'blob-created-events'
     tags: commonTags
     location: location
@@ -769,8 +775,8 @@ resource kvSecretsUserApi 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 }
 
 resource storageContributorIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storageModule.outputs.mediaStorageId, appIdentity.id, 'blob-data-contributor')
-  scope: storageModule.outputs.mediaStorageId
+  name: guid(mediaStorageRef.id, appIdentity.id, 'blob-data-contributor')
+  scope: mediaStorageRef
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe') // Storage Blob Data Contributor
     principalId: appIdentity.properties.principalId
@@ -841,3 +847,4 @@ output scanTopicName string = defenderModule.outputs.scanTopicName
 output scanTopicId string = defenderModule.outputs.scanTopicId
 output scanTopicEndpoint string = defenderModule.outputs.scanTopicEndpoint
 output blobCreatedQueueName string = eventGridModule.outputs.blobCreatedQueueName
+output scanResultQueueName string = defenderModule.outputs.scanResultQueueName

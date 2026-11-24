@@ -3,8 +3,8 @@ targetScope = 'resourceGroup'
 @description('Prefix for naming')
 param prefix string
 
-@description('Environment tag')
-param environment string
+@description('Media storage account name')
+param mediaStorageName string = 'st${prefix}'
 
 @description('Web origin for CORS (e.g., https://penancias-web.xxx.uaenorth.azurecontainerapps.io)')
 param webOrigin string
@@ -26,7 +26,7 @@ var containerNames = [
 
 // Clinical Media & Results Storage Account
 resource mediaStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: 'st${prefix}'
+  name: mediaStorageName
   location: location
   tags: tags
   sku: {
@@ -111,6 +111,24 @@ resource managementPolicy 'Microsoft.Storage/storageAccounts/managementPolicies@
   }
 }
 
+// Storage queue service and queues for event delivery
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = {
+  parent: mediaStorage
+  name: 'default'
+}
+
+resource blobCreatedQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = {
+  parent: queueService
+  name: 'blob-created-events'
+  properties: {}
+}
+
+resource scanResultQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = {
+  parent: queueService
+  name: 'scan-result-events'
+  properties: {}
+}
+
 resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
   parent: mediaStorage
   name: 'default'
@@ -147,3 +165,5 @@ output functionStorageName string = functionStorage.name
 output functionStorageId string = functionStorage.id
 output containerNames array = containerNames
 output clinicalStateShareName string = clinicalStateShare.name
+output blobCreatedQueueName string = blobCreatedQueue.name
+output scanResultQueueName string = scanResultQueue.name

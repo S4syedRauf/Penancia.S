@@ -929,6 +929,67 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0023 — Phase 2 Step 2.1: Storage, Scan and Event Infrastructure (Bicep) Round 2 (G1–G5)
+
+- **Date (UTC):** 2026-11-24T13:20:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / Step 2.1 (Round 2 Remediation)
+- **Issue IDs:** (none for 2.1; ISS-015/016 are Steps 2.2/2.3)
+- **Type:** Fixed & Infra
+- **Summary:**
+  1. **Honest Review Assessment of 5b3d0f3:**
+     - Commit `5b3d0f3` did not compile (`bicep build infra/main.bicep` exited with 10 errors and 7 warnings).
+     - Errors were caused by passing `resourceId(...)` string expressions to `parent:` and `scope:` properties which strictly require symbolic resource references (BCP036/BCP240), and assigning module outputs to role assignment names/scopes that require values calculable at start of deployment (BCP120).
+  2. **G1: Bicep Symbolic Reference & Scope Remediation:**
+     - In `infra/modules/eventgrid.bicep` and `infra/modules/defender.bicep`: declared `resource st 'Microsoft.Storage/storageAccounts@2023-05-01' existing = { name: storageAccountName }` and used `scope: st` and `parent: st`.
+     - In `infra/modules/storage.bicep`: created default `queueService` and both queues `blob-created-events` and `scan-result-events`, avoiding duplicate `queueServices` resource definitions across modules.
+     - In `infra/main.bicep`: made storage account name a known variable (`var mediaStorageName = 'st${prefix}'`), declared `resource mediaStorageRef 'Microsoft.Storage/storageAccounts@2023-05-01' existing = { name: mediaStorageName }`, and updated role assignment `storageContributorIdentity` to use `scope: mediaStorageRef` with name `guid(mediaStorageRef.id, appIdentity.id, 'blob-data-contributor')`, resolving BCP120.
+  3. **G2: Removed Dead Parameters:**
+     - Removed unused `scanResultsTopicId` parameter from `infra/modules/defender.bicep` and caller in `infra/main.bicep`.
+     - Removed unused `environment` parameter from `infra/modules/storage.bicep` and caller in `infra/main.bicep`.
+     - Removed unused `storageAccountId` parameter from `infra/modules/eventgrid.bicep` and caller in `infra/main.bicep`.
+     - `defender.bicep` owns `scanTopic` and outputs `scanTopicName`, `scanTopicId`, and `scanTopicEndpoint`.
+  4. **G3: Malware Scan Results Routing & Subscription:**
+     - Added queue `scan-result-events` in `storage.bicep`.
+     - Configured `scanTopic` with system-assigned identity (`identity: { type: 'SystemAssigned' }`).
+     - Added role assignment `scanResultQueueSender` granting `scanTopic.identity.principalId` `Storage Queue Data Message Sender` (`c6a89b2d-59bc-44d0-9896-0f6e12d7b80a`) on the storage account.
+     - Added Event Grid subscription `scanResultSubscription` on `scanTopic` delivering to `scan-result-events` via `deliveryWithResourceIdentity` (system-assigned), with `dependsOn: [ scanResultQueueSender ]`.
+     - Noted that receiver Function will be implemented in Step 2.4.
+  5. **G4: CI Bicep Validation Hardening:**
+     - Created `infra/bicep-warning-baseline.txt` initialized to 5 (baseline measured from `main`).
+     - Refactored `validate_bicep` job in `.github/workflows/deploy.yml` to build once (`az bicep build --file infra/main.bicep --outdir /tmp/bicep_out 2>&1 | tee /tmp/bicep_build.log`).
+     - Enforced `shell: bash` and `set -eo pipefail` so any non-zero exit code from `az bicep build` immediately fails the CI step.
+     - Switched warning detection to count all warnings via `grep -c " : Warning "` (covering BCP and linter diagnostics).
+     - Enforced failure if warning count exceeds baseline from `infra/bicep-warning-baseline.txt`.
+     - Target achieved: 0 errors, exactly 5 warnings (matching baseline).
+  6. **G5: Append-Only Policy:**
+     - Left `CL-0022` untouched as committed in `132ef35` and `d2457c9`.
+     - All corrections recorded exclusively in this new entry `CL-0023`.
+- **Why:** Resolve all 10 Bicep compilation errors, eliminate dead parameters, wire malware scan event routing to queue, and establish strict CI validation against baseline warnings.
+- **Files changed:**
+  - `infra/main.bicep`
+  - `infra/modules/storage.bicep`
+  - `infra/modules/defender.bicep`
+  - `infra/modules/eventgrid.bicep`
+  - `infra/bicep-warning-baseline.txt`
+  - `.github/workflows/deploy.yml`
+  - `CHANGELOG.md`
+- **Behaviour before → after:** `bicep build infra/main.bicep` exits 0 with 0 errors and 5 warnings (was exit 1 with 10 errors and 7 warnings); Defender scan results are queued to `scan-result-events`.
+- **Contract / schema / API changes:** none
+- **Database migration:** none
+- **Config / env / infra changes:** Storage queues created in storage module, scanTopic given system identity and role assignment, Bicep warning baseline established.
+- **Tests run:**
+  - `DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/bundle_extract /tmp/bicep build infra/main.bicep` → 0 errors, 5 warnings (<= baseline 5)
+  - `bash tools/check_role_ids.sh` → SUCCESS (all 6 role IDs allowed)
+  - `bash tools/check_role_ids.test.sh` → all 5 tests passed
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed
+- **Known gaps / risks:** Scan results queue receiver Function will be implemented in Step 2.4.
+- **Rollback:** Revert commit on `phase-2/upload-and-submit`.
+- **Follow-ups for the next developer or model:** Proceed to Step 2.2 (Harden SAS, ISS-016).
+- **Commit(s):** pending
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did
