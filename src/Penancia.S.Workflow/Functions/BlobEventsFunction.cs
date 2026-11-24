@@ -31,7 +31,7 @@ public class BlobEventsFunction
 
     [Function("OnBlobCreated")]
     public async Task RunBlobCreated(
-        [QueueTrigger("blob-created-events", Connection = "AzureWebJobsStorage")] string messageText,
+        [QueueTrigger("blob-created-events", Connection = "MediaQueues")] string messageText,
         CancellationToken cancellationToken)
     {
         await ProcessBlobCreatedAsync(messageText, cancellationToken);
@@ -39,7 +39,7 @@ public class BlobEventsFunction
 
     [Function("OnScanResult")]
     public async Task RunScanResult(
-        [QueueTrigger("scan-result-events", Connection = "AzureWebJobsStorage")] string messageText,
+        [QueueTrigger("scan-result-events", Connection = "MediaQueues")] string messageText,
         [DurableClient] DurableTaskClient client,
         CancellationToken cancellationToken)
     {
@@ -191,11 +191,18 @@ public class BlobEventsFunction
                 return false;
             }
 
-            // Extract sampleId and assetId from blob URI path e.g. /quarantine/{sampleId}/{assetId}.mp4
+            // Extract container, sampleId and assetId from blob URI path e.g. /quarantine/{sampleId}/{assetId}.mp4
             var pathParts = blobUri.AbsolutePath.TrimStart('/').Split('/', 3);
             if (pathParts.Length < 3)
             {
                 _logger.LogWarning("ScanResult blobUri path does not match container/sampleId/asset: {Path}", blobUri.AbsolutePath);
+                return false;
+            }
+
+            string containerName = pathParts[0];
+            if (!string.Equals(containerName, "quarantine", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation("Ignoring ScanResult for non-quarantine container '{Container}'", containerName);
                 return false;
             }
 
@@ -212,6 +219,12 @@ public class BlobEventsFunction
             if (asset == null)
             {
                 _logger.LogWarning("MediaAsset {AssetId} not found in database; dropping scan result", assetId);
+                return false;
+            }
+
+            if (!string.Equals(asset.SampleId, sampleId, StringComparison.Ordinal))
+            {
+                _logger.LogWarning("ScanResult URL sampleId '{UrlSampleId}' differs from MediaAsset.SampleId '{AssetSampleId}' for asset {AssetId}; dropping", sampleId, asset.SampleId, assetId);
                 return false;
             }
 
@@ -233,6 +246,21 @@ public class BlobEventsFunction
             else
             {
                 verdict = "Error";
+            }
+
+            // F2: Terminal / rejected verdicts are sticky — a later "No threats found" must NOT clear a Rejected/Malicious/NotScanned/Error asset
+            bool isStickyRejectedOrMalicious =
+                string.Equals(asset.Status, "Rejected", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(asset.ScanVerdict, "Malicious", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(asset.ScanVerdict, "NotScanned", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(asset.ScanVerdict, "Error", StringComparison.OrdinalIgnoreCase);
+
+            if (isStickyRejectedOrMalicious && verdict == "Clean")
+            {
+                _logger.LogWarning(
+                    "Ignoring 'No threats found' scan result for MediaAsset {AssetId} because terminal state is sticky (Status={Status}, ScanVerdict={ScanVerdict})",
+                    assetId, asset.Status, asset.ScanVerdict);
+                return true;
             }
 
             // Extract sha256 and malwareNamesFound
@@ -281,26 +309,27 @@ public class BlobEventsFunction
             await _db.SaveChangesAsync(cancellationToken);
             _logger.LogInformation("Recorded scan verdict '{Verdict}' for MediaAsset {AssetId} (Status: {Status})", verdict, assetId, asset.Status);
 
-            // Raise external event to durable orchestrator if instance exists
+            // Raise external event to durable orchestrator if instance exists (use asset.SampleId as instance id)
+            string orchestratorInstanceId = asset.SampleId;
             if (client != null)
             {
                 try
                 {
-                    var metadata = await client.GetInstanceAsync(sampleId, getInputsAndOutputs: false, cancellationToken);
+                    var metadata = await client.GetInstanceAsync(orchestratorInstanceId, getInputsAndOutputs: false, cancellationToken);
                     if (metadata != null)
                     {
                         var eventPayload = new ScanCompletedEvent(assetId, verdict);
-                        await client.RaiseEventAsync(sampleId, WorkflowEvents.ScanCompleted(assetId), eventPayload, cancellationToken);
-                        _logger.LogInformation("Raised ScanCompleted event for sample {SampleId}, asset {AssetId}", sampleId, assetId);
+                        await client.RaiseEventAsync(orchestratorInstanceId, WorkflowEvents.ScanCompleted(assetId), eventPayload, cancellationToken);
+                        _logger.LogInformation("Raised ScanCompleted event for sample {SampleId}, asset {AssetId}", orchestratorInstanceId, assetId);
                     }
                     else
                     {
-                        _logger.LogInformation("No active orchestration instance found for sample {SampleId}; verdict persisted to database row only", sampleId);
+                        _logger.LogInformation("No active orchestration instance found for sample {SampleId}; verdict persisted to database row only", orchestratorInstanceId);
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to query or raise event to orchestration instance {SampleId}; verdict is safely persisted", sampleId);
+                    _logger.LogWarning(ex, "Failed to query or raise event to orchestration instance {SampleId}; verdict is safely persisted", orchestratorInstanceId);
                 }
             }
 

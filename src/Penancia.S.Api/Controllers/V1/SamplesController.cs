@@ -491,7 +491,8 @@ public class SamplesController : ControllerBase
             return Forbid();
         }
 
-        if (asset.Status == "Uploaded")
+        if (string.Equals(asset.Status, "Uploaded", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(asset.Status, "Cleared", StringComparison.OrdinalIgnoreCase))
         {
             return Ok(new
             {
@@ -662,11 +663,12 @@ public class SamplesController : ControllerBase
         // Readiness strictly reads real stored facts (Step 1.5)
         var assets = await _db.MediaAssets.Where(a => a.SampleId == sampleId).ToListAsync();
 
-        // Quarantine scan-gate (CL-0027): media pointing to quarantine blobs must be Cleared before analysis
-        var mediaAssets = assets.Where(a => string.Equals(a.Kind, "video", StringComparison.OrdinalIgnoreCase) ||
-                                            string.Equals(a.Kind, "image", StringComparison.OrdinalIgnoreCase)).ToList();
-        if (mediaAssets.Count > 0 && mediaAssets.Any(a => !string.Equals(a.Status, "Cleared", StringComparison.OrdinalIgnoreCase) &&
-                                                          !string.Equals(a.Status, "Verified", StringComparison.OrdinalIgnoreCase)))
+        // Quarantine scan-gate (CL-0027/CL-0028): media in quarantine must be Cleared before analysis
+        var quarantineMediaAssets = assets.Where(a =>
+            (string.Equals(a.Kind, "video", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(a.Kind, "image", StringComparison.OrdinalIgnoreCase)) &&
+            string.Equals(a.Container, "quarantine", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (quarantineMediaAssets.Count > 0 && quarantineMediaAssets.Any(a => !string.Equals(a.Status, "Cleared", StringComparison.OrdinalIgnoreCase)))
         {
             return StatusCode(StatusCodes.Status409Conflict, new
             {

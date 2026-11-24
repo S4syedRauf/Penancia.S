@@ -20,12 +20,20 @@ public class BlobEventsFunctionTests
     private class TestDurableTaskClient : DurableTaskClient
     {
         public bool InstanceExists { get; set; } = true;
+        public bool ThrowOnRaiseEvent { get; set; } = false;
         public string? RaisedInstanceId { get; private set; }
         public string? RaisedEventName { get; private set; }
         public object? RaisedPayload { get; private set; }
 
         public TestDurableTaskClient(string name = "test-hub") : base(name)
         {
+        }
+
+        public void ResetRaised()
+        {
+            RaisedInstanceId = null;
+            RaisedEventName = null;
+            RaisedPayload = null;
         }
 
         public override Task<string> ScheduleNewOrchestrationInstanceAsync(
@@ -57,6 +65,10 @@ public class BlobEventsFunctionTests
             object? eventPayload,
             CancellationToken cancellationToken = default)
         {
+            if (ThrowOnRaiseEvent)
+            {
+                throw new InvalidOperationException("Simulated DurableTaskClient failure");
+            }
             RaisedInstanceId = instanceId;
             RaisedEventName = eventName;
             RaisedPayload = eventPayload;
@@ -193,6 +205,7 @@ public class BlobEventsFunctionTests
         Assert.Equal("Rejected", reloaded!.Status);
         Assert.Equal("Malicious", reloaded.ScanVerdict);
         Assert.Equal(eicarSha256, reloaded.Sha256);
+        Assert.NotNull(reloaded.ScannedAtUtc);
         Assert.NotNull(reloaded.MalwareNamesFound);
         Assert.Contains("EICAR_Test_File", reloaded.MalwareNamesFound);
         Assert.Contains("Malware detected", reloaded.RejectReason);
@@ -245,6 +258,7 @@ public class BlobEventsFunctionTests
         Assert.Equal("Cleared", reloaded!.Status);
         Assert.Equal("Clean", reloaded.ScanVerdict);
         Assert.Equal(cleanSha256, reloaded.Sha256);
+        Assert.NotNull(reloaded.ScannedAtUtc);
 
         // Orchestrator event raised
         Assert.Equal(sampleId, client.RaisedInstanceId);
@@ -287,6 +301,8 @@ public class BlobEventsFunctionTests
         Assert.NotNull(reloaded);
         Assert.Equal("Rejected", reloaded!.Status);
         Assert.Equal(expectedVerdict, reloaded.ScanVerdict);
+        Assert.NotNull(reloaded.ScannedAtUtc);
+        Assert.Equal($"Malware scanning failed: {expectedVerdict}", reloaded.RejectReason);
     }
 
     [Fact]
@@ -488,5 +504,348 @@ public class BlobEventsFunctionTests
         Assert.Equal("Cleared", reloaded!.Status);
         Assert.Equal("Clean", reloaded.ScanVerdict);
         Assert.Null(client.RaisedInstanceId); // No event raised
+    }
+
+    [Fact]
+    public async Task OnScanResult_CleanAfterRejected_DoesNotClear_StickyTerminal_F2()
+    {
+        var (db, function) = CreateFunction();
+        const string sampleId = "s-sticky-rejected";
+        var assetId = Guid.NewGuid();
+        await SeedMediaAssetAsync(db, sampleId, assetId, status: "Rejected");
+
+        var cleanEvent = new
+        {
+            eventType = "Microsoft.Security.MalwareScanningResult",
+            data = new
+            {
+                blobUri = $"https://stpenancias.blob.core.windows.net/quarantine/{sampleId}/{assetId}.mp4",
+                scanResultType = "No threats found"
+            }
+        };
+
+        var client = new TestDurableTaskClient();
+        bool handled = await function.ProcessScanResultAsync(JsonSerializer.Serialize(cleanEvent), client);
+
+        Assert.True(handled);
+        var reloaded = await db.MediaAssets.FindAsync(assetId);
+        Assert.Equal("Rejected", reloaded!.Status);
+        Assert.Null(reloaded.ScanVerdict);
+        Assert.Null(client.RaisedInstanceId);
+    }
+
+    [Fact]
+    public async Task OnScanResult_MaliciousThenClean_StaysRejected_F2()
+    {
+        var (db, function) = CreateFunction();
+        const string sampleId = "s-malicious-then-clean";
+        var assetId = Guid.NewGuid();
+        await SeedMediaAssetAsync(db, sampleId, assetId, status: "Uploaded");
+
+        var maliciousEvent = new
+        {
+            eventType = "Microsoft.Security.MalwareScanningResult",
+            data = new
+            {
+                blobUri = $"https://stpenancias.blob.core.windows.net/quarantine/{sampleId}/{assetId}.mp4",
+                scanResultType = "Malicious",
+                scanResultDetails = new { malwareNamesFound = new[] { "EICAR_Test_File" }, sha256 = "abc" }
+            }
+        };
+        var cleanEvent = new
+        {
+            eventType = "Microsoft.Security.MalwareScanningResult",
+            data = new
+            {
+                blobUri = $"https://stpenancias.blob.core.windows.net/quarantine/{sampleId}/{assetId}.mp4",
+                scanResultType = "No threats found"
+            }
+        };
+
+        var client = new TestDurableTaskClient();
+        Assert.True(await function.ProcessScanResultAsync(JsonSerializer.Serialize(maliciousEvent), client));
+        client.ResetRaised();
+
+        // Late or duplicate Clean event arrives
+        Assert.True(await function.ProcessScanResultAsync(JsonSerializer.Serialize(cleanEvent), client));
+
+        var reloaded = await db.MediaAssets.FindAsync(assetId);
+        Assert.Equal("Rejected", reloaded!.Status);
+        Assert.Equal("Malicious", reloaded.ScanVerdict);
+        Assert.Null(client.RaisedInstanceId); // Must not raise ScanCompleted again
+    }
+
+    [Fact]
+    public async Task OnScanResult_CleanThenMalicious_FlipsToRejected_F2()
+    {
+        var (db, function) = CreateFunction();
+        const string sampleId = "s-clean-then-malicious";
+        var assetId = Guid.NewGuid();
+        await SeedMediaAssetAsync(db, sampleId, assetId, status: "Cleared");
+
+        var maliciousEvent = new
+        {
+            eventType = "Microsoft.Security.MalwareScanningResult",
+            data = new
+            {
+                blobUri = $"https://stpenancias.blob.core.windows.net/quarantine/{sampleId}/{assetId}.mp4",
+                scanResultType = "Malicious"
+            }
+        };
+
+        Assert.True(await function.ProcessScanResultAsync(JsonSerializer.Serialize(maliciousEvent)));
+
+        var reloaded = await db.MediaAssets.FindAsync(assetId);
+        Assert.Equal("Rejected", reloaded!.Status);
+        Assert.Equal("Malicious", reloaded.ScanVerdict);
+    }
+
+    [Fact]
+    public async Task OnScanResult_RaiseEventThrows_StillPersistsVerdict_AndDoesNotThrow_F4()
+    {
+        var (db, function) = CreateFunction();
+        const string sampleId = "s-raise-throws";
+        var assetId = Guid.NewGuid();
+        await SeedMediaAssetAsync(db, sampleId, assetId, status: "Uploaded");
+
+        var cleanEvent = new
+        {
+            eventType = "Microsoft.Security.MalwareScanningResult",
+            data = new
+            {
+                blobUri = $"https://stpenancias.blob.core.windows.net/quarantine/{sampleId}/{assetId}.mp4",
+                scanResultType = "No threats found"
+            }
+        };
+
+        var client = new TestDurableTaskClient { ThrowOnRaiseEvent = true };
+        bool handled = await function.ProcessScanResultAsync(JsonSerializer.Serialize(cleanEvent), client);
+
+        Assert.True(handled);
+        var reloaded = await db.MediaAssets.FindAsync(assetId);
+        Assert.Equal("Cleared", reloaded!.Status);
+        Assert.Equal("Clean", reloaded.ScanVerdict);
+        Assert.NotNull(reloaded.ScannedAtUtc);
+    }
+
+    [Fact]
+    public async Task OnBlobCreated_ExistingSizeBytesGreaterThanZero_DoesNotOverwrite_F4()
+    {
+        var (db, function) = CreateFunction();
+        const string sampleId = "s-no-overwrite-size";
+        var assetId = Guid.NewGuid();
+        var asset = new MediaAssetEntity
+        {
+            AssetId = assetId,
+            SampleId = sampleId,
+            Kind = "video",
+            Container = "quarantine",
+            BlobName = $"{sampleId}/{assetId}.mp4",
+            ContentTypeDeclared = "video/mp4",
+            Status = "Issued",
+            SizeBytes = 12345,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        db.MediaAssets.Add(asset);
+        await db.SaveChangesAsync();
+
+        var cloudEvent = new
+        {
+            specversion = "1.0",
+            type = "Microsoft.Storage.BlobCreated",
+            data = new
+            {
+                url = $"https://stpenancias.blob.core.windows.net/quarantine/{sampleId}/{assetId}.mp4",
+                contentLength = 99999L
+            }
+        };
+
+        Assert.True(await function.ProcessBlobCreatedAsync(JsonSerializer.Serialize(cloudEvent)));
+        var reloaded = await db.MediaAssets.FindAsync(assetId);
+        Assert.Equal("Uploaded", reloaded!.Status);
+        Assert.Equal(12345L, reloaded.SizeBytes);
+    }
+
+    [Fact]
+    public async Task OnBlobCreated_NonQuarantineContainer_IgnoredAndRowUntouched_F4()
+    {
+        var (db, function) = CreateFunction();
+        const string sampleId = "s-non-quarantine-blob";
+        var assetId = Guid.NewGuid();
+        await SeedMediaAssetAsync(db, sampleId, assetId, status: "Issued");
+
+        var cloudEvent = new
+        {
+            specversion = "1.0",
+            type = "Microsoft.Storage.BlobCreated",
+            data = new
+            {
+                url = $"https://stpenancias.blob.core.windows.net/raw-videos/{sampleId}/{assetId}.mp4",
+                contentLength = 5000L
+            }
+        };
+
+        Assert.False(await function.ProcessBlobCreatedAsync(JsonSerializer.Serialize(cloudEvent)));
+        var reloaded = await db.MediaAssets.FindAsync(assetId);
+        Assert.Equal("Issued", reloaded!.Status);
+        Assert.Equal(0L, reloaded.SizeBytes);
+    }
+
+    [Fact]
+    public async Task OnBlobCreated_SubjectOnlyFallback_NoDataUrl_MarksUploaded_F4()
+    {
+        var (db, function) = CreateFunction();
+        const string sampleId = "s-subject-fallback";
+        var assetId = Guid.NewGuid();
+        await SeedMediaAssetAsync(db, sampleId, assetId, status: "Issued");
+
+        var cloudEvent = new
+        {
+            specversion = "1.0",
+            type = "Microsoft.Storage.BlobCreated",
+            subject = $"/blobServices/default/containers/quarantine/blobs/{sampleId}/{assetId}.mp4",
+            data = new { contentLength = 2048L }
+        };
+
+        Assert.True(await function.ProcessBlobCreatedAsync(JsonSerializer.Serialize(cloudEvent)));
+        var reloaded = await db.MediaAssets.FindAsync(assetId);
+        Assert.Equal("Uploaded", reloaded!.Status);
+        Assert.Equal(2048L, reloaded.SizeBytes);
+    }
+
+    [Fact]
+    public async Task BothFunctions_ArrayWrappedEvents_ProcessedCorrectly_F4()
+    {
+        var (db, function) = CreateFunction();
+        const string sampleId = "s-array-events";
+        var assetId = Guid.NewGuid();
+        await SeedMediaAssetAsync(db, sampleId, assetId, status: "Issued");
+
+        var blobArray = new[]
+        {
+            new
+            {
+                specversion = "1.0",
+                type = "Microsoft.Storage.BlobCreated",
+                data = new
+                {
+                    url = $"https://stpenancias.blob.core.windows.net/quarantine/{sampleId}/{assetId}.mp4",
+                    contentLength = 4096L
+                }
+            }
+        };
+
+        Assert.True(await function.ProcessBlobCreatedAsync(JsonSerializer.Serialize(blobArray)));
+        Assert.Equal("Uploaded", (await db.MediaAssets.FindAsync(assetId))!.Status);
+
+        var scanArray = new[]
+        {
+            new
+            {
+                eventType = "Microsoft.Security.MalwareScanningResult",
+                data = new
+                {
+                    blobUri = $"https://stpenancias.blob.core.windows.net/quarantine/{sampleId}/{assetId}.mp4",
+                    scanResultType = "No threats found"
+                }
+            }
+        };
+
+        Assert.True(await function.ProcessScanResultAsync(JsonSerializer.Serialize(scanArray)));
+        Assert.Equal("Cleared", (await db.MediaAssets.FindAsync(assetId))!.Status);
+    }
+
+    [Fact]
+    public async Task BothFunctions_PathFewerThan3Segments_ReturnsFalse_F4()
+    {
+        var (_, function) = CreateFunction();
+
+        var shortBlobEvent = new
+        {
+            specversion = "1.0",
+            type = "Microsoft.Storage.BlobCreated",
+            data = new { url = "https://stpenancias.blob.core.windows.net/quarantine/missing-asset.mp4" }
+        };
+        Assert.False(await function.ProcessBlobCreatedAsync(JsonSerializer.Serialize(shortBlobEvent)));
+
+        var shortScanEvent = new
+        {
+            eventType = "Microsoft.Security.MalwareScanningResult",
+            data = new
+            {
+                blobUri = "https://stpenancias.blob.core.windows.net/quarantine/missing-asset.mp4",
+                scanResultType = "No threats found"
+            }
+        };
+        Assert.False(await function.ProcessScanResultAsync(JsonSerializer.Serialize(shortScanEvent)));
+    }
+
+    [Fact]
+    public async Task OnScanResult_UrlSampleIdMismatch_DropsEvent_F5()
+    {
+        var (db, function) = CreateFunction();
+        var assetId = Guid.NewGuid();
+        await SeedMediaAssetAsync(db, "sample-real", assetId, status: "Uploaded");
+
+        var scanEvent = new
+        {
+            eventType = "Microsoft.Security.MalwareScanningResult",
+            data = new
+            {
+                blobUri = $"https://stpenancias.blob.core.windows.net/quarantine/sample-spoofed/{assetId}.mp4",
+                scanResultType = "No threats found"
+            }
+        };
+
+        Assert.False(await function.ProcessScanResultAsync(JsonSerializer.Serialize(scanEvent)));
+        var reloaded = await db.MediaAssets.FindAsync(assetId);
+        Assert.Equal("Uploaded", reloaded!.Status);
+        Assert.Null(reloaded.ScanVerdict);
+    }
+
+    [Fact]
+    public async Task OnScanResult_NonQuarantineContainer_DropsEvent_F5()
+    {
+        var (db, function) = CreateFunction();
+        const string sampleId = "s-scan-non-quarantine";
+        var assetId = Guid.NewGuid();
+        await SeedMediaAssetAsync(db, sampleId, assetId, status: "Uploaded");
+
+        var scanEvent = new
+        {
+            eventType = "Microsoft.Security.MalwareScanningResult",
+            data = new
+            {
+                blobUri = $"https://stpenancias.blob.core.windows.net/derived/{sampleId}/{assetId}.mp4",
+                scanResultType = "No threats found"
+            }
+        };
+
+        Assert.False(await function.ProcessScanResultAsync(JsonSerializer.Serialize(scanEvent)));
+        var reloaded = await db.MediaAssets.FindAsync(assetId);
+        Assert.Equal("Uploaded", reloaded!.Status);
+        Assert.Null(reloaded.ScanVerdict);
+    }
+
+    [Fact]
+    public void QueueTriggers_UseMediaQueuesConnection_AndExpectedQueueNames_F3()
+    {
+        var blobCreatedMethod = typeof(BlobEventsFunction).GetMethod(nameof(BlobEventsFunction.RunBlobCreated));
+        Assert.NotNull(blobCreatedMethod);
+        var blobTrigger = blobCreatedMethod!.GetParameters()[0]
+            .GetCustomAttributes(typeof(Microsoft.Azure.Functions.Worker.QueueTriggerAttribute), false)
+            .Cast<Microsoft.Azure.Functions.Worker.QueueTriggerAttribute>()
+            .Single();
+        Assert.Equal("blob-created-events", blobTrigger.QueueName);
+        Assert.Equal("MediaQueues", blobTrigger.Connection);
+
+        var scanResultMethod = typeof(BlobEventsFunction).GetMethod(nameof(BlobEventsFunction.RunScanResult));
+        Assert.NotNull(scanResultMethod);
+        var scanTrigger = scanResultMethod!.GetParameters()[0]
+            .GetCustomAttributes(typeof(Microsoft.Azure.Functions.Worker.QueueTriggerAttribute), false)
+            .Cast<Microsoft.Azure.Functions.Worker.QueueTriggerAttribute>()
+            .Single();
+        Assert.Equal("scan-result-events", scanTrigger.QueueName);
+        Assert.Equal("MediaQueues", scanTrigger.Connection);
     }
 }

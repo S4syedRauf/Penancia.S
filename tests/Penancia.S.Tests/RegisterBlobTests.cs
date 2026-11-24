@@ -673,4 +673,68 @@ public class RegisterBlobTests
         Assert.NotEqual("SCAN_PENDING", error);
         Assert.Equal("PREREQUISITES_MISSING", error);
     }
+
+    [Fact]
+    public async Task Test20_RegisterBlob_ClearedAsset_Returns200Idempotent_AndStaysCleared_F1()
+    {
+        // F1: RegisterBlob on an already Cleared asset must NOT regress status back to Uploaded or touch storage
+        var (controller, db, _) = CreateController(
+            blobPropertiesReader: (_, _) => throw new InvalidOperationException("Storage must NOT be called for Cleared asset!"));
+        const string sampleId = "s-cleared-sticky-f1";
+        await SeedSampleAsync(db, sampleId);
+        var asset = await SeedMediaAssetAsync(db, sampleId, kind: "video", status: "Cleared", sizeBytes: 4096);
+
+        var result = await controller.RegisterBlob(sampleId, new RegisterBlobRequest { AssetId = asset.AssetId });
+
+        var okResult = Assert.IsType<OkObjectResult>(result);
+        Assert.Equal(StatusCodes.Status200OK, okResult.StatusCode);
+        var statusProp = okResult.Value?.GetType().GetProperty("status")?.GetValue(okResult.Value)?.ToString();
+        Assert.Equal("Cleared", statusProp);
+
+        db.ChangeTracker.Clear();
+        var reloaded = await db.MediaAssets.FindAsync(asset.AssetId);
+        Assert.NotNull(reloaded);
+        Assert.Equal("Cleared", reloaded!.Status);
+        Assert.Equal(4096, reloaded.SizeBytes);
+
+        var reloadedSample = await db.Samples.FindAsync(sampleId);
+        Assert.Null(reloadedSample!.RawVideoBlobUri);
+    }
+
+    [Fact]
+    public async Task Test21_TriggerAnalysis_OneClearedAndOneUploadedMediaAsset_Returns409ScanPending_F4()
+    {
+        // F4: Kills Any -> All mutant in quarantine scan-gate
+        var (controller, db, _) = CreateController();
+        const string sampleId = "s-scan-gate-any-vs-all";
+        await SeedSampleAsync(db, sampleId, state: "Draft");
+
+        await SeedMediaAssetAsync(db, sampleId, kind: "video", status: "Cleared", sizeBytes: 2048);
+        await SeedMediaAssetAsync(db, sampleId, kind: "image", status: "Uploaded", sizeBytes: 1024);
+
+        var result = await controller.TriggerAnalysis(sampleId);
+
+        var objResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status409Conflict, objResult.StatusCode);
+        var error = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
+        Assert.Equal("SCAN_PENDING", error);
+    }
+
+    [Fact]
+    public async Task Test22_TriggerAnalysis_QuarantineAssetWithVerifiedStatus_Returns409ScanPending_F5()
+    {
+        // F5: Verified is removed from the quarantine scan-gate
+        var (controller, db, _) = CreateController();
+        const string sampleId = "s-scan-gate-no-verified";
+        await SeedSampleAsync(db, sampleId, state: "Draft");
+
+        await SeedMediaAssetAsync(db, sampleId, kind: "video", status: "Verified", sizeBytes: 2048);
+
+        var result = await controller.TriggerAnalysis(sampleId);
+
+        var objResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status409Conflict, objResult.StatusCode);
+        var error = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
+        Assert.Equal("SCAN_PENDING", error);
+    }
 }

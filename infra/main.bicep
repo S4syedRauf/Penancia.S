@@ -621,6 +621,18 @@ resource workflowFunctionApp 'Microsoft.App/containerApps@2024-03-01' = {
               value: '${serviceBusNamespace.name}.servicebus.windows.net'
             }
             {
+              name: 'MediaQueues__queueServiceUri'
+              value: 'https://${storageModule.outputs.mediaStorageName}.queue.${az.environment().suffixes.storage}'
+            }
+            {
+              name: 'MediaQueues__credential'
+              value: 'managedidentity'
+            }
+            {
+              name: 'MediaQueues__clientId'
+              value: appIdentity.properties.clientId
+            }
+            {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
               value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=app-insights-connection-string)'
             }

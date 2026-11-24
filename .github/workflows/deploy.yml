@@ -79,6 +79,12 @@ jobs:
       - name: Run Role ID check tests
         run: bash tools/check_role_ids.test.sh
 
+      - name: Validate Queue Wiring
+        run: bash tools/check_queue_wiring.sh
+
+      - name: Run Queue Wiring check tests
+        run: bash tools/check_queue_wiring.test.sh
+
 # ============================================================
 # 1. Build & Test Backend (.NET)
 # ============================================================
