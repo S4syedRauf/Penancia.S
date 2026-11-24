@@ -1,6 +1,9 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Penancia.S.Data;
+using Penancia.S.Data.Entities;
+using Penancia.S.Domain.Model;
 using Penancia.S.Domain.Workflow;
 
 namespace Penancia.S.Api.Controllers.V1;
@@ -11,28 +14,39 @@ namespace Penancia.S.Api.Controllers.V1;
 /// </summary>
 [ApiController]
 [Route("v1/semen")]
-[Authorize(Policy = "StaffOnly")]
+[Authorize]
 public class CalibrationController : ControllerBase
 {
     private readonly ILogger<CalibrationController> _logger;
-    private readonly Penancia.S.Data.PenanciaDbContext _db;
+    private readonly PenanciaDbContext _db;
+    private readonly IConfiguration _configuration;
 
-    public CalibrationController(ILogger<CalibrationController> logger, Penancia.S.Data.PenanciaDbContext db)
+    public CalibrationController(
+        ILogger<CalibrationController> logger,
+        PenanciaDbContext db,
+        IConfiguration configuration)
     {
         _logger = logger;
         _db = db;
+        _configuration = configuration;
     }
+
+    private string CallerObjectId() =>
+        User.FindFirst("oid")?.Value
+        ?? User.FindFirst("http://schemas.microsoft.com/identity/claims/objectidentifier")?.Value
+        ?? User.Identity?.Name
+        ?? "system";
+
+    private bool IsStaffCaller() =>
+        User.IsInRole("Technician") || User.IsInRole("Signer")
+        || User.IsInRole("ClinicalDirector") || User.IsInRole("LabAdmin");
 
     /// <summary>
     /// Initiates a pre-screening pipeline analysis run for an EXISTING sample,
-    /// through the state machine (#9, #43). Unknown sessions return 404 — a
-    /// sample is never auto-created here, and no calibration values are ever
-    /// written: the old code created samples with MicronsPerPixel=1.0 /
-    /// FramesPerSecond=30.0 / ChamberDepthMicrons=10.0 as if measured.
-    /// Calibration presence is read from what is actually stored; if it is
-    /// absent the machine fails the Submit with PREREQUISITES_MISSING.
+    /// through the state machine (#9, #43). Unknown sessions return 404.
     /// </summary>
     [HttpPost("analyze")]
+    [Authorize(Policy = "StaffOnly")]
     public async Task<IActionResult> PostAnalyze([FromBody] System.Text.Json.JsonElement payload)
     {
         if (payload.ValueKind is System.Text.Json.JsonValueKind.Undefined or System.Text.Json.JsonValueKind.Null)
@@ -82,15 +96,180 @@ public class CalibrationController : ControllerBase
     }
 
     /// <summary>
-    /// Computes microscope scale factor from user-verified grid line count across calibrated graticule.
-    /// WHO 2021 Reference: 10 µm standard Neubauer grid spacing.
-    /// All three inputs are required (#43): no fabricated defaults are
-    /// substituted when a field is missing. A failed calibration returns
-    /// 422, not 200-with-failure.
+    /// Starts asynchronous optical calibration for a sample using a verified calibration media asset.
+    /// Inserts CalibrationEntity in 'Pending' state and registers an outbox dispatch message.
+    /// Returns 202 Accepted.
+    /// </summary>
+    [HttpPost("samples/{sampleId}/calibration")]
+    public async Task<IActionResult> PostSampleCalibration(string sampleId, [FromBody] StartCalibrationRequest? request)
+    {
+        if (request is null)
+            return BadRequest(new { ok = false, error = "Request body is required." });
+
+        if (request.AssetId == Guid.Empty || string.IsNullOrWhiteSpace(request.TargetId))
+            return BadRequest(new { ok = false, error = "Both assetId (Guid) and targetId (string) are required." });
+
+        var sample = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
+        if (sample == null)
+            return NotFound(new { ok = false, error = $"Sample {sampleId} not found." });
+
+        string callerId = CallerObjectId();
+        if (!IsStaffCaller() && !string.Equals(sample.CreatedBy, callerId, StringComparison.OrdinalIgnoreCase))
+            return Forbid();
+
+        if (!PhysicalCatalogues.TryGetTarget(request.TargetId, out var target))
+        {
+            return StatusCode(422, new
+            {
+                ok = false,
+                error = "UNKNOWN_CALIBRATION_TARGET",
+                message = $"Target ID '{request.TargetId}' is not recognized in the physical catalogue."
+            });
+        }
+
+        var asset = await _db.MediaAssets.FirstOrDefaultAsync(a => a.AssetId == request.AssetId && a.SampleId == sampleId);
+        if (asset == null)
+        {
+            return NotFound(new { ok = false, error = $"Media asset {request.AssetId} not found for sample {sampleId}." });
+        }
+
+        if (!string.Equals(asset.Kind, "calibration", StringComparison.OrdinalIgnoreCase))
+        {
+            return StatusCode(422, new
+            {
+                ok = false,
+                error = "ASSET_NOT_CALIBRATION_IMAGE",
+                message = $"Asset {asset.AssetId} has kind '{asset.Kind}'; only 'calibration' assets can be used for optical calibration."
+            });
+        }
+
+        if (!string.Equals(asset.Status, "Verified", StringComparison.OrdinalIgnoreCase))
+        {
+            return StatusCode(422, new
+            {
+                ok = false,
+                error = "ASSET_NOT_VERIFIED",
+                message = $"Asset {asset.AssetId} has status '{asset.Status}'; only 'Verified' assets can be calibrated."
+            });
+        }
+
+        var calibration = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = sampleId,
+            TargetId = target.Id,
+            ReferencePitchUm = target.PitchUm,
+            AssetId = asset.AssetId,
+            Status = "Pending",
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        _db.Calibrations.Add(calibration);
+
+        sample.CalibrationId = calibration.CalibrationId;
+
+        var jobId = Guid.NewGuid();
+        var outbox = new OutboxMessageEntity
+        {
+            Id = jobId,
+            Type = "job-calibration",
+            PayloadJson = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                job_id = jobId.ToString(),
+                sample_id = sampleId,
+                service = "calibration",
+                schema_version = "1.0.0",
+                inputs = new
+                {
+                    calibration_image_uri = $"{asset.Container}/{asset.BlobName}"
+                },
+                @params = new
+                {
+                    reference_pitch_um = target.PitchUm,
+                    calibration_id = calibration.CalibrationId.ToString()
+                }
+            }),
+            CreatedAtUtc = DateTime.UtcNow,
+            Attempts = 0
+        };
+        _db.OutboxMessages.Add(outbox);
+
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation("Enqueued calibration {CalibrationId} for sample {SampleId} using target {TargetId}",
+            calibration.CalibrationId, sampleId, target.Id);
+
+        return Accepted(
+            $"/v1/semen/samples/{sampleId}/calibration/{calibration.CalibrationId}",
+            new
+            {
+                ok = true,
+                calibrationId = calibration.CalibrationId,
+                status = calibration.Status,
+                targetId = target.Id,
+                referencePitchUm = target.PitchUm
+            });
+    }
+
+    /// <summary>
+    /// Retrieves calibration record for a sample.
+    /// </summary>
+    [HttpGet("samples/{sampleId}/calibration/{calibrationId}")]
+    public async Task<IActionResult> GetSampleCalibration(string sampleId, Guid calibrationId)
+    {
+        var sample = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
+        if (sample == null)
+            return NotFound(new { ok = false, error = $"Sample {sampleId} not found." });
+
+        string callerId = CallerObjectId();
+        if (!IsStaffCaller() && !string.Equals(sample.CreatedBy, callerId, StringComparison.OrdinalIgnoreCase))
+            return Forbid();
+
+        var cal = await _db.Calibrations.FirstOrDefaultAsync(c => c.CalibrationId == calibrationId && c.SampleId == sampleId);
+        if (cal == null)
+            return NotFound(new { ok = false, error = $"Calibration {calibrationId} not found for sample {sampleId}." });
+
+        return Ok(new
+        {
+            ok = true,
+            calibrationId = cal.CalibrationId,
+            sampleId = cal.SampleId,
+            assetId = cal.AssetId,
+            targetId = cal.TargetId,
+            referencePitchUm = cal.ReferencePitchUm,
+            status = cal.Status,
+            rejectReason = cal.RejectReason,
+            measuredPitchPx = cal.MeasuredPitchPx,
+            micronsPerPixel = cal.MicronsPerPixel,
+            linesDetected = cal.LinesDetected,
+            spacingCvPct = cal.SpacingCvPct,
+            imageWidthPx = cal.ImageWidthPx,
+            imageHeightPx = cal.ImageHeightPx,
+            toolVersion = cal.ToolVersion,
+            createdAtUtc = cal.CreatedAtUtc,
+            expiresAtUtc = cal.ExpiresAtUtc
+        });
+    }
+
+    /// <summary>
+    /// Deprecated legacy calibration endpoint.
+    /// Returns 410 Gone unless DEMO_MODE is active.
     /// </summary>
     [HttpPost("calibration")]
     public IActionResult PostCalibration([FromBody] CalibrationRequest? request)
     {
+        bool isDemo = _configuration.GetValue<bool>("DEMO_MODE")
+            || string.Equals(Environment.GetEnvironmentVariable("DEMO_MODE"), "true", StringComparison.OrdinalIgnoreCase);
+
+        if (!isDemo)
+        {
+            return StatusCode(410, new
+            {
+                ok = false,
+                error = "ENDPOINT_GONE",
+                message = "Legacy calibration endpoint has been retired. Use POST /v1/semen/samples/{sampleId}/calibration"
+            });
+        }
+
         if (request is null)
             return BadRequest(new { ok = false, error = "Request body is required." });
 
@@ -116,25 +295,32 @@ public class CalibrationController : ControllerBase
             });
         }
 
-        // Standard WHO 2021 calibration: known width / detected resolution
         double umPerPx = Math.Round(fieldWidth / (lines.Value * 50.0), 3);
         if (umPerPx <= 0) umPerPx = Math.Round(10.0 / lines.Value, 3);
 
-        _logger.LogInformation("Calibrated optical micrometer: {Lines} lines -> {UmPerPx:F3} µm/px", lines.Value, umPerPx);
+        _logger.LogInformation("Calibrated optical micrometer (demo): {Lines} lines -> {UmPerPx:F3} µm/px", lines.Value, umPerPx);
 
         return Ok(new
         {
             ok = true,
+            demo = true,
+            status = "DEMO_NOT_MEASURED",
             scaleFactor = umPerPx,
             umPerPx = umPerPx,
             linesDetected = lines.Value,
             spacingVariancePct = variance,
             unit = "µm/px",
             calibratedAt = DateTime.UtcNow.ToString("o"),
-            messageEn = $"Micrometer Verified: {umPerPx} µm/px ({lines.Value} even lines)",
-            messageAr = $"نجحت المعايرة: {umPerPx} µm/px ({lines.Value} خطوط)"
+            messageEn = $"Demo calibration: {umPerPx} µm/px ({lines.Value} lines, not physically measured)",
+            messageAr = $"معايرة تجريبية: {umPerPx} µm/px ({lines.Value} خطوط، غير مقاسة فعلياً)"
         });
     }
+}
+
+public class StartCalibrationRequest
+{
+    public Guid AssetId { get; set; }
+    public string TargetId { get; set; } = string.Empty;
 }
 
 public class CalibrationRequest

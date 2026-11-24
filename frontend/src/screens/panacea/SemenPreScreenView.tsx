@@ -35,6 +35,7 @@ import { Selector } from '@astryxdesign/core/Selector';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { GOLDEN_RESEARCH_CLIPS, PANACEA_SEMEN_KITS } from '../../data/panaceaCatalogs';
+import { PHYSICAL_CHAMBERS, UNLISTED_CHAMBER_ID, UNLISTED_CHAMBER_LABEL } from '../../data/physicalCatalogues';
 import { usePanacea } from '../../store/PanaceaContext';
 import type { PipelineStageCode, SemenSessionRun, StageLogEntry, SubView } from '../../types/panacea';
 import { analyzeSpermImage, computeFileSha256, extractFrameFromVideo } from '../../utils/spermImageAnalyzer';
@@ -83,6 +84,7 @@ export const SemenPreScreenView: React.FC<SemenPreScreenViewProps> = ({
   const isAr = language === 'ar';
 
   const [selectedKitId, setSelectedKitId] = useState(PANACEA_SEMEN_KITS[0].kitId);
+  const [selectedChamberId, setSelectedChamberId] = useState<string>(PHYSICAL_CHAMBERS[0].id);
   const [selectedGoldenId, setSelectedGoldenId] = useState<string>('none');
   const [abstinenceDays, setAbstinenceDays] = useState(3);
   const [tempNote, setTempNote] = useState<'room' | '37c_stage'>('37c_stage');
@@ -697,6 +699,16 @@ try {
             value={selectedKitId}
             onChange={setSelectedKitId}
             options={PANACEA_SEMEN_KITS.map((k) => ({ value: k.kitId, label: k.kitName }))}
+          />
+
+          <Selector
+            label={isAr ? 'غرفة العد المعتمدة' : 'Counting Chamber Specification'}
+            value={selectedChamberId}
+            onChange={setSelectedChamberId}
+            options={[
+              ...PHYSICAL_CHAMBERS.map((c) => ({ value: c.id, label: `${c.displayName} (${c.depthUm} µm)` })),
+              { value: UNLISTED_CHAMBER_ID, label: UNLISTED_CHAMBER_LABEL },
+            ]}
           />
 
           <Card variant="muted" padding={3}>

@@ -143,7 +143,7 @@ test('report builders contain no heuristic fields when both flags are false', ()
 
 test('report text and HTML contain no TZI, Acrosome, L/W, Pyriform or µm/px anywhere', () => {
   for (const lang of ['en', 'ar'] as const) {
-    const report = buildSemenReport(run, analysis, lang);
+    const report = buildSemenReport(run, { ...analysis, morphologyCategory: 'Pyriform' }, lang);
     const reportText = JSON.stringify(report);
     const html = generateSemenReportHtml(report);
     const forbidden = ['TZI', 'Acrosome', 'L/W', 'Pyriform', 'µm/px'];

@@ -42,6 +42,8 @@ dist/
 
 ## Local AI-agent configuration
 .claude/
+.kilo/
+.nuget/
 
 ## Local tool and workstation state
 /.foundry/

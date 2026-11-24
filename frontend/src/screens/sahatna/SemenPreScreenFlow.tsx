@@ -870,7 +870,7 @@ export const SemenPreScreenFlow: React.FC = () => {
               >
                 <p className="text-[13px] font-bold text-[#151813]">{k.kitName}</p>
                 <p className="text-[11px] text-[#646A63]">
-                  Magnification: {k.magnification} · Chamber depth: {k.chamberDepthUm} µm
+                  Magnification: {k.magnification}{k.chamberDepthUm != null ? ` · Chamber depth: ${k.chamberDepthUm} µm` : ''}
                 </p>
               </button>
             ))}
@@ -885,7 +885,7 @@ export const SemenPreScreenFlow: React.FC = () => {
               }`}
             >
               <p className="text-[13px] font-bold text-[#151813]">
-                Ordinary slide / Unknown chamber depth
+                My chamber is not listed
               </p>
               <p className="text-[11px] text-[#646A63]">
                 Concentration band will automatically be marked Unclear; motility still runs.

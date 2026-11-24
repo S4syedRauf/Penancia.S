@@ -25,10 +25,26 @@ public class SampleEntity
     [MaxLength(32)]
     public string State { get; set; } = "Draft";
 
+    [MaxLength(32)]
+    public string WorkflowMode { get; set; } = "prescreen";
+
+    [MaxLength(64)]
+    public string? ParentSampleId { get; set; }
+
+    [MaxLength(64)]
+    public string? ChamberTypeId { get; set; }
+
+    public DateTime? ConsentAtUtc { get; set; }
+
+    public Guid? CalibrationId { get; set; }
+
+    [ForeignKey(nameof(CalibrationId))]
+    public CalibrationEntity? Calibration { get; set; }
+
     // --- Optical Calibration ---
-    public double MicronsPerPixel { get; set; }
-    public double FramesPerSecond { get; set; }
-    public double ChamberDepthMicrons { get; set; }
+    public double? MicronsPerPixel { get; set; }
+    public double? FramesPerSecond { get; set; }
+    public double? ChamberDepthMicrons { get; set; }
 
     // --- Storage URIs ---
     [MaxLength(1024)]

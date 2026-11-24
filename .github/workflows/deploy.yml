@@ -65,6 +65,106 @@ jobs:
         run: dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj --no-build -c Release --verbosity normal
 
   # ============================================================
+  # 1b. Verify SQL Server Migrations (SQL Server 2022)
+  # ============================================================
+  verify_sql_migrations:
+    runs-on: ubuntu-latest
+    name: Verify SQL Migrations (SQL Server 2022)
+    if: github.event_name == 'pull_request'
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: 'YourStrong!Passw0rd'
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'YourStrong!Passw0rd' -C -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET SDK 8.0
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore tools and verify migration drift
+        run: |
+          dotnet tool restore
+          dotnet ef migrations has-pending-model-changes -p src/Penancia.S.Data -s src/Penancia.S.Api --configuration Release
+
+      - name: Verify idempotent migration script matches migrations.sql
+        run: |
+          dotnet ef migrations script --idempotent -p src/Penancia.S.Data -s src/Penancia.S.Api --configuration Release -o /tmp/regen.sql
+          python3 -c "
+          with open('/tmp/regen.sql', 'rb') as f:
+              b = f.read()
+          if b.startswith(b'\xef\xbb\xbf'):
+              b = b[3:]
+          s = b.decode('utf-8').replace('\r\n', '\n').strip()
+          with open('/tmp/regen_clean.sql', 'w', encoding='utf-8') as f:
+              f.write(s + '\n')
+          with open('migrations.sql', 'r', encoding='utf-8') as f:
+              s_orig = f.read().replace('\r\n', '\n').strip()
+          with open('/tmp/orig_clean.sql', 'w', encoding='utf-8') as f:
+              f.write(s_orig + '\n')
+          "
+          diff -u /tmp/orig_clean.sql /tmp/regen_clean.sql || (echo "ERROR: migrations.sql is out of sync with dotnet ef migrations script" && exit 1)
+
+      - name: Verify SQL Migrations
+        env:
+          MSSQL_SA_PASSWORD: 'YourStrong!Passw0rd'
+        run: bash tools/verify_migrations.sh
+
+      - name: Run SQL Server Integration Tests
+        shell: bash
+        env:
+          TEST_SQLSERVER_CONNECTION_STRING: "Server=127.0.0.1,1433;Database=db_fresh;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True"
+        run: |
+          set -eo pipefail
+          if [ -z "$TEST_SQLSERVER_CONNECTION_STRING" ]; then
+            echo "ERROR: TEST_SQLSERVER_CONNECTION_STRING is missing in CI"
+            exit 1
+          fi
+          dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release --filter Category=SqlServer --verbosity normal --logger "console;verbosity=detailed" | tee /tmp/sqlserver_test.log
+          if grep -E "Skipped:[[:space:]]+[1-9]" /tmp/sqlserver_test.log; then
+            echo "ERROR: SqlServer integration tests were skipped in CI"
+            exit 1
+          fi
+          if ! grep -E "Passed:[[:space:]]+1\b" /tmp/sqlserver_test.log; then
+            echo "ERROR: SqlServer integration tests did not pass (expected 'Passed: 1')"
+            exit 1
+          fi
+
+  # ============================================================
+  # 1c. Test Model Workers (Python)
+  # ============================================================
+  test_models:
+    runs-on: ubuntu-latest
+    name: Test Model Workers (Python)
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r models/calibration/requirements.txt
+
+      - name: Run Calibration Worker Tests
+        run: pytest models/calibration -v
+
+  # ============================================================
   # 2. Build & Test Frontend
   # ============================================================
   build_test_frontend:

@@ -24,6 +24,11 @@ public class PenanciaDbContext : DbContext
     public DbSet<FollowUpTaskEntity> FollowUpTasks => Set<FollowUpTaskEntity>();
     public DbSet<SymptomLogEntity> SymptomLogs => Set<SymptomLogEntity>();
     public DbSet<DailyCheckInEntity> DailyCheckIns => Set<DailyCheckInEntity>();
+    public DbSet<CalibrationEntity> Calibrations => Set<CalibrationEntity>();
+    public DbSet<MediaAssetEntity> MediaAssets => Set<MediaAssetEntity>();
+    public DbSet<OutboxMessageEntity> OutboxMessages => Set<OutboxMessageEntity>();
+    public DbSet<InboxMessageEntity> InboxMessages => Set<InboxMessageEntity>();
+    public DbSet<IdempotencyKeyEntity> IdempotencyKeys => Set<IdempotencyKeyEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -108,5 +113,51 @@ public class PenanciaDbContext : DbContext
         modelBuilder.Entity<LabOrderEntity>()
             .HasIndex(o => o.TrackingNumber)
             .HasDatabaseName("IX_LabOrders_TrackingNumber");
+
+        // Phase 1 Foundation additions
+        modelBuilder.Entity<SampleEntity>()
+            .Property(s => s.WorkflowMode)
+            .HasDefaultValue("prescreen");
+
+        modelBuilder.Entity<SampleEntity>()
+            .HasOne(s => s.Calibration)
+            .WithMany()
+            .HasForeignKey(s => s.CalibrationId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<IdempotencyKeyEntity>()
+            .HasKey(k => new { k.Key, k.SampleId });
+
+        modelBuilder.Entity<CalibrationEntity>()
+            .HasOne<SampleEntity>()
+            .WithMany()
+            .HasForeignKey(c => c.SampleId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<CalibrationEntity>()
+            .HasIndex(c => c.SampleId)
+            .HasDatabaseName("IX_Calibrations_SampleId");
+
+        modelBuilder.Entity<CalibrationEntity>()
+            .HasIndex(c => c.AssetId)
+            .HasDatabaseName("IX_Calibrations_AssetId");
+
+        modelBuilder.Entity<MediaAssetEntity>()
+            .HasOne<SampleEntity>()
+            .WithMany()
+            .HasForeignKey(m => m.SampleId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<MediaAssetEntity>()
+            .HasIndex(m => m.SampleId)
+            .HasDatabaseName("IX_MediaAssets_SampleId");
+
+        modelBuilder.Entity<MediaAssetEntity>()
+            .HasIndex(m => m.BlobName)
+            .HasDatabaseName("IX_MediaAssets_BlobName");
+
+        modelBuilder.Entity<OutboxMessageEntity>()
+            .HasIndex(o => o.DispatchedAtUtc)
+            .HasDatabaseName("IX_OutboxMessages_DispatchedAtUtc");
     }
 }

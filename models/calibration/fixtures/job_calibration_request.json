@@ -1,0 +1,13 @@
+{
+  "job_id": "00000000-0000-0000-0000-000000000001",
+  "sample_id": "SMP-TEST-001",
+  "service": "calibration",
+  "schema_version": "1.0.0",
+  "inputs": {
+    "calibration_image_uri": "raw-images/calibration_001.jpg"
+  },
+  "params": {
+    "reference_pitch_um": 10.0,
+    "calibration_id": "00000000-0000-0000-0000-000000000001"
+  }
+}
