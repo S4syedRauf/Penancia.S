@@ -463,12 +463,20 @@ namespace Penancia.S.Data.Migrations
                     b.Property<DateTime?>("DispatchedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
                     b.Property<string>("LastError")
                         .HasColumnType("nvarchar(max)");
 
                     b.Property<string>("PayloadJson")
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
+
+                    b.Property<string>("SampleId")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
 
                     b.Property<string>("Type")
                         .IsRequired()
@@ -479,6 +487,14 @@ namespace Penancia.S.Data.Migrations
 
                     b.HasIndex("DispatchedAtUtc")
                         .HasDatabaseName("IX_OutboxMessages_DispatchedAtUtc");
+
+                    b.HasIndex("IdempotencyKey")
+                        .IsUnique()
+                        .HasDatabaseName("IX_OutboxMessages_IdempotencyKey")
+                        .HasFilter("[IdempotencyKey] IS NOT NULL");
+
+                    b.HasIndex("SampleId")
+                        .HasDatabaseName("IX_OutboxMessages_SampleId");
 
                     b.ToTable("OutboxMessages");
                 });

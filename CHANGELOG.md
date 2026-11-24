@@ -1297,7 +1297,48 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
   - `bash tools/check_queue_wiring.sh` & `bash tools/check_queue_wiring.test.sh` → PASS (4/4 tests passed).
   - `bash tools/check_changelog.test.sh` → PASS (4/4 tests passed).
   - Mutation testing (15/15 CAUGHT): `F1-ClearedSticky`, `F2-StickyTerminal`, `F2-MaliciousThenClean`, `F3-QueueConnection`, `F4-GateAnyToAll`, `F4-ScannedAtUtc`, `F4-SizeNoOverwrite`, `F4-BlobCreatedContainer`, `F4-SubjectFallback`, `F4-ArrayWrapped`, `F4-ShortPath`, `F4-RejectReason`, `F5-SampleIdMismatch`, `F5-ScanContainer`, `F5-NoVerifiedInGate`.
-- **Commit(s):** pending (branch `phase-2/fix-scan-wiring`)
+- **Commit(s):** `1211a0c` (branch `phase-2/fix-scan-wiring`)
+
+---
+
+### CL-0029 — Phase 2 Step 2.5 Core (Lane B): SubmitSampleService, Outbox Idempotency Migration, and Tests
+
+- **Date (UTC):** 2026-11-24T19:30:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / Step 2.5 Core (Lane B)
+- **Issue IDs:** ISS-015, ISS-016
+- **Type:** Added & Migration
+- **Prior Commit Record:** Branched from `bdd316c` (`CL-0027` commit on `phase-2/upload-and-submit`).
+- **Summary:**
+  1. **Outbox Idempotency Schema (`OutboxMessageEntity.cs`, `PenanciaDbContext.cs`, `Phase2_OutboxIdempotency`):**
+     - Added nullable `SampleId` (nvarchar(64)) and nullable `IdempotencyKey` (nvarchar(128)) columns to `OutboxMessages`.
+     - Added `IX_OutboxMessages_SampleId` and a unique filtered index `IX_OutboxMessages_IdempotencyKey` (`[IdempotencyKey] IS NOT NULL`) so legacy calibration outbox rows with null keys do not collide.
+     - Regenerated idempotent `migrations.sql` without UTF-8 BOM; verified 0 pending model changes.
+  2. **Transactional Submission Core (`src/Penancia.S.Api/Application/SubmitSampleService.cs`):**
+     - Loads sample (`Include(s => s.Calibration)`), verifies ownership (`CreatedBy` or `IsStaff`), checks idempotent replay by `IdempotencyKey` (returning 202 with existing `OutboxId` without writing a duplicate row, or 409 if the key belongs to another sample).
+     - Verifies state transition via `SampleStateMachine.Apply(currentState, SampleEvent.Submit, ctx)` (moves `Draft` $\to$ `Validating`, returning 409 for invalid/already-submitted states).
+     - Requires a calibration row (`422 MISSING_CALIBRATION`), at least one `"Cleared"` media asset (`422 NO_CLEARED_MEDIA`), and no uncleared `"quarantine"` media assets (`422 SCAN_PENDING`).
+     - Updates `sample.State` and inserts one `OutboxMessageEntity` (`Type = "sample-submit"`, `DispatchedAtUtc = null`, `Attempts = 0`, `IdempotencyKey`) inside a single `IDbContextTransaction`.
+  3. **StartAnalysisFunction (`StartAnalysisFunction.cs`):** Verified `InstanceId = sampleId` is already set; no edits required.
+  4. **Unit & In-Memory Integration Tests (`tests/Penancia.S.Tests/SubmitSampleServiceTests.cs`):** 13 test cases against the EF Core InMemory provider covering happy path, not-owner (403), wrong state (409), no calibration (422), non-cleared media (`Issued`/`Uploaded`/`Rejected`/empty -> 422), partial scan gate (`Cleared` + `Uploaded` -> 422), idempotent replay (same key twice -> 202, 1 outbox row), different key on submitted sample (409, 1 outbox row), missing sample (404), and missing idempotency key (400).
+- **Known gaps / expected behaviour:**
+  - The outbox row is persisted in `OutboxMessages`, but no outbox dispatcher runs until **Step 3.3**. Consequently, a submitted sample will sit in its post-submit state (`Validating`) with no Durable orchestration running until Step 3.3 is implemented. This is expected and not a regression.
+- **Files changed:**
+  - `src/Penancia.S.Api/Application/SubmitSampleService.cs` — new transactional submission service.
+  - `src/Penancia.S.Data/Entities/OutboxMessageEntity.cs` — nullable `SampleId` and `IdempotencyKey`.
+  - `src/Penancia.S.Data/PenanciaDbContext.cs` — indexes on `SampleId` and unique filtered `IdempotencyKey`.
+  - `src/Penancia.S.Data/Migrations/20261124192511_Phase2_OutboxIdempotency.cs` & `.Designer.cs` & `PenanciaDbContextModelSnapshot.cs`.
+  - `migrations.sql` — regenerated idempotent script (no BOM).
+  - `tests/Penancia.S.Tests/SubmitSampleServiceTests.cs` — 13 InMemory EF Core tests.
+  - `CHANGELOG.md` — appended CL-0029 entry.
+- **Tests run & Mutation Results:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 347 passed, 1 skipped, 0 failed.
+  - `cd frontend && bun test` → 31 passed, 0 failed.
+  - `bicep build infra/main.bicep` → 0 errors, 5 warnings.
+  - `bash tools/check_role_ids.sh` → PASS (7/7 allowed).
+  - `bash tools/check_changelog.test.sh` → PASS (4/4 tests passed).
+  - Mutation testing (`SubmitSampleService.cs`): `B-Owner` CAUGHT, `B-Calibration` CAUGHT, `B-NoClearedMedia` CAUGHT, `B-ScanGatePartial` CAUGHT, `B-IdempotentReplay` CAUGHT, `B-OutboxPersistence` CAUGHT; `B-WrongState` equivalent (enforced redundantly by `SampleStateMachine.Apply`).
+- **Commit(s):** `fc2bb7b` (branch `phase-2/submit-core`)
 
 ---
 
