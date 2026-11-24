@@ -46,6 +46,12 @@ param entraWebClientSecret string
 @description('Native Functions host/function key. Leave empty only for the first workflow bootstrap deployment, then set it before enabling analysis.')
 param workflowFunctionKey string = ''
 
+@description('Web origin for Storage CORS (e.g., https://penancias-web.xxx.uaenorth.azurecontainerapps.io)')
+param webOrigin string = 'https://localhost:3000'
+
+@description('Malware scanning cap in GB per month (0 = unlimited)')
+param malwareScanCapGB int = 1000
+
 // ---------------------------------------------------------------------------
 // Shared tag block applied to every resource for cost management and policy.
 // ---------------------------------------------------------------------------
@@ -93,167 +99,55 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Storage Account 1: Clinical Media & Results
-//    5 private containers: raw-video, raw-images, results, reports, quarantine
+// 3. Storage Module: Clinical Media & Results + Durable Functions State
+//    6 private containers: raw-video, raw-images, results, reports, quarantine, derived
+//    CORS configured for web origin, lifecycle policy deletes quarantine after 1 day
 // ---------------------------------------------------------------------------
-resource mediaStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: 'st${prefix}'
-  location: location
-  tags: commonTags
-  sku: {
-    name: 'Standard_LRS'
-  }
-  kind: 'StorageV2'
-  properties: {
-    allowBlobPublicAccess: false
-    minimumTlsVersion: 'TLS1_2'
-    supportsHttpsTrafficOnly: true
-  }
-}
-
-var containerNames = [
-  'raw-video'
-  'raw-images'
-  'results'
-  'reports'
-  'quarantine'
-]
-
-resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
-  parent: mediaStorage
-  name: 'default'
-}
-
-resource mediaContainers 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = [for name in containerNames: {
-  parent: blobService
-  name: name
-  properties: {
-    publicAccess: 'None'
-  }
-}]
-
-resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
-  parent: mediaStorage
-  name: 'default'
-}
-
-resource clinicalStateShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
-  parent: fileService
-  name: 'clinical-state'
-  properties: {
-    shareQuota: 100
-    enabledProtocols: 'SMB'
+module storageModule 'modules/storage.bicep' = {
+  name: 'storage-deployment'
+  params: {
+    prefix: prefix
+    environment: environment
+    webOrigin: webOrigin
+    tags: commonTags
+    location: location
   }
 }
 
 // ---------------------------------------------------------------------------
-// Phase 2 Step 2.1: Defender for Storage — malware scanning on all blobs
+// Phase 2 Step 2.1: Defender for Storage Module
+//    Per-account Defender settings with malware scanning on upload
+//    Scan results published to dedicated Event Grid topic
 // ---------------------------------------------------------------------------
-resource defenderStorage 'Microsoft.Security/pricings@2023-01-01-preview' = {
-  name: 'StorageAccounts'
-  location: location
-  properties: {
-    pricingTier: 'Standard'
+module defenderModule 'modules/defender.bicep' = {
+  name: 'defender-deployment'
+  params: {
+    storageAccountName: storageModule.outputs.mediaStorageName
+    scanResultsTopicId: '' // Will be set by defender module's own topic
+    malwareScanCapGB: malwareScanCapGB
+    tags: commonTags
   }
 }
 
 // ---------------------------------------------------------------------------
-// Phase 2 Step 2.1: Event Grid System Topic for Blob Events
-//    Captures BlobCreated, BlobDeleted for upload scan & verification pipeline
+// Phase 2 Step 2.1: Event Grid Module for Blob Events
+//    System topic on media storage, subscription for quarantine container BlobCreated
+//    Events delivered to storage queue via system topic's managed identity
+//    DEVIATION: queues instead of Function endpoints (Functions don't exist until Step 2.4)
 // ---------------------------------------------------------------------------
-resource eventGridTopic 'Microsoft.EventGrid/systemTopics@2023-06-01-preview' = {
-  name: 'egst-${prefix}-storage'
-  location: location
-  tags: commonTags
-  identity: {
-    type: 'SystemAssigned'
-  }
-  properties: {
-    topicType: 'Microsoft.Storage.StorageAccounts'
-    source: mediaStorage.id
-  }
-}
-
-// Subscription: blob created -> scan queue (Step 2.3/2.4 will wire receiver)
-resource egSubscriptionBlobCreated 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2023-06-01-preview' = {
-  parent: eventGridTopic
-  name: 'blob-created-subscription'
-  properties: {
-    destination: {
-      endpointType: 'StorageQueue'
-      properties: {
-        storageQueueDestination: {
-          resourceId: mediaStorage.id
-          queueName: 'blob-created-events'
-        }
-      }
-    }
-    filter: {
-      includedEventTypes: [
-        'Microsoft.Storage.BlobCreated'
-      ]
-      enableAdvancedFilteringOnArrays: false
-    }
-    eventDeliverySchema: 'CloudEventSchemaV1_0'
-  }
-}
-
-// Subscription: blob deleted -> cleanup handling
-resource egSubscriptionBlobDeleted 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2023-06-01-preview' = {
-  parent: eventGridTopic
-  name: 'blob-deleted-subscription'
-  properties: {
-    destination: {
-      endpointType: 'StorageQueue'
-      properties: {
-        storageQueueDestination: {
-          resourceId: mediaStorage.id
-          queueName: 'blob-deleted-events'
-        }
-      }
-    }
-    filter: {
-      includedEventTypes: [
-        'Microsoft.Storage.BlobDeleted'
-      ]
-      enableAdvancedFilteringOnArrays: false
-    }
-    eventDeliverySchema: 'CloudEventSchemaV1_0'
-  }
-}
-
-// Storage queues for Event Grid event handling
-resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = {
-  parent: mediaStorage
-  name: 'default'
-}
-
-resource eventQueues 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = [for q in ['blob-created-events', 'blob-deleted-events']: {
-  parent: queueService
-  name: q
-  properties: {}
-}]
-
-// ---------------------------------------------------------------------------
-// 4. Storage Account 2: Durable Functions Internal State
-// ---------------------------------------------------------------------------
-resource functionStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: 'stfn${prefix}'
-  location: location
-  tags: commonTags
-  sku: {
-    name: 'Standard_LRS'
-  }
-  kind: 'StorageV2'
-  properties: {
-    allowBlobPublicAccess: false
-    minimumTlsVersion: 'TLS1_2'
-    supportsHttpsTrafficOnly: true
+module eventGridModule 'modules/eventgrid.bicep' = {
+  name: 'eventgrid-deployment'
+  params: {
+    storageAccountName: storageModule.outputs.mediaStorageName
+    storageAccountId: storageModule.outputs.mediaStorageId
+    blobCreatedQueueName: 'blob-created-events'
+    tags: commonTags
+    location: location
   }
 }
 
 // ---------------------------------------------------------------------------
-// 5. Service Bus Namespace: 11 Job Queues + model-results
+// 4. Service Bus Namespace: 11 Job Queues + model-results
 //    Standard tier: supports dead-lettering and duplicate detection.
 //    maxDeliveryCount=5 gives 5 retries before poison-queue.
 //    Queue names match DispatchModelJobActivity (`job-{service}`) and the
@@ -296,7 +190,7 @@ resource queues 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = [f
 }]
 
 // ---------------------------------------------------------------------------
-// 6. Azure Container Registry (Standard — no admin user; MI pulls only)
+// 5. Azure Container Registry (Standard — no admin user; MI pulls only)
 // ---------------------------------------------------------------------------
 resource acr 'Microsoft.ContainerRegistry/registries@2023-01-01-preview' = {
   name: 'acr${prefix}'
@@ -311,7 +205,7 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-01-01-preview' = {
 }
 
 // ---------------------------------------------------------------------------
-// 7. Container Apps Environment (Durable Functions, Gotenberg PDF, model jobs)
+// 6. Container Apps Environment (Durable Functions, Gotenberg PDF, model jobs)
 //    Linked to Log Analytics for centralized logs.
 // ---------------------------------------------------------------------------
 resource containerAppEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
@@ -330,8 +224,8 @@ resource containerAppEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
       {
         name: 'clinical-state'
         storageType: 'AzureFile'
-        accountName: mediaStorage.name
-        shareName: clinicalStateShare.name
+        accountName: storageModule.outputs.mediaStorageName
+        shareName: storageModule.outputs.clinicalStateShareName
         accessMode: 'ReadWrite'
       }
     ]
@@ -339,7 +233,7 @@ resource containerAppEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Azure SQL Server — Entra-only authentication (no SQL passwords)
+// 7. Azure SQL Server — Entra-only authentication (no SQL passwords)
 //    The Managed Identity (id-penancias-apps) is the AD admin.
 // ---------------------------------------------------------------------------
 resource sqlServer 'Microsoft.Sql/servers@2023-05-01-preview' = {
@@ -370,7 +264,7 @@ resource sqlFirewallAzureServices 'Microsoft.Sql/servers/firewallRules@2023-05-0
 }
 
 // ---------------------------------------------------------------------------
-// 9. Azure SQL Database — Serverless General Purpose (auto-pauses when idle)
+// 8. Azure SQL Database — Serverless General Purpose (auto-pauses when idle)
 //    Scales to 0 — no billing when dev environment is not in use.
 //    autoPauseDelay=60 means it pauses after 60 mins of inactivity.
 // ---------------------------------------------------------------------------
@@ -396,11 +290,11 @@ resource sqlDatabase 'Microsoft.Sql/servers/databases@2023-05-01-preview' = {
 }
 
 // ---------------------------------------------------------------------------
-// 10. Key Vault — all secrets are Key Vault references, never literals.
-//     The three secrets below are created with the placeholder value
-//     '<FILL-IN-VIA-KEY-VAULT>'. Replace each one with its real value before
-//     the apps can start (portal or `az keyvault secret set`). RBAC is on;
-//     access is granted in section 14.
+// 9. Key Vault — all secrets are Key Vault references, never literals.
+//    The secrets below are created with the placeholder value
+//    '<FILL-IN-VIA-KEY-VAULT>'. Replace each one with its real value before
+//    the apps can start (portal or `az keyvault secret set`). RBAC is on;
+//    access is granted in section 14.
 // ---------------------------------------------------------------------------
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: 'kv-${prefix}'
@@ -471,7 +365,7 @@ resource kvSecretWebClient 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
 }
 
 // ---------------------------------------------------------------------------
-// 11. Api Container App — Penancia.S.Api (ASP.NET Core, port 8080)
+// 10. Api Container App — Penancia.S.Api (ASP.NET Core, port 8080)
 //     Image is built from the repo-root Dockerfile and pushed to ACR first.
 //     App settings cover EVERY key the Api reads:
 //       Program.cs: ConnectionStrings__DefaultConnection, AzureAd__* section.
@@ -562,7 +456,7 @@ resource apiContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
             }
             {
               name: 'Azure__StorageAccount'
-              value: mediaStorage.name
+              value: storageModule.outputs.mediaStorageName
             }
             {
               name: 'Azure__ServiceBusFqdn'
@@ -609,9 +503,9 @@ resource apiContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
 }
 
 // ---------------------------------------------------------------------------
-// 12. Gotenberg Container App — HTML-to-PDF rendering (internal ingress only)
+// 11. Gotenberg Container App — HTML-to-PDF rendering (internal ingress only)
 //     Called by the Workflow's RenderPdfReportActivity (currently a TODO stub
-//     in code — Stage S5; the GotenbergUrl app setting in section 13 is
+//     in code — Stage S5; the GotenbergUrl app setting in section 12 is
 //     provisioned here so the wiring has somewhere to point when the stub
 //     is implemented).
 // ---------------------------------------------------------------------------
@@ -647,9 +541,11 @@ resource gotenbergContainerApp 'Microsoft.App/containerApps@2023-05-01' = {
   }
 }
 
-// 13. Workflow — native Azure Functions on Azure Container Apps.
+// ---------------------------------------------------------------------------
+// 12. Workflow — native Azure Functions on Azure Container Apps.
 // Function keys are stored by the host in functionStorage's private
 // azure-webjob-secrets container; retrieve them after the first deployment.
+// ---------------------------------------------------------------------------
 resource workflowFunctionApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: 'penancias-workflow'
   location: location
@@ -737,8 +633,10 @@ resource workflowFunctionApp 'Microsoft.App/containerApps@2024-03-01' = {
   }
 }
 
-// Public ingress is only on the web application. Easy Auth is configured in
+// ---------------------------------------------------------------------------
+// 13. Public ingress is only on the web application. Easy Auth is configured in
 // web-auth.bicep after this resource so the callback URL is known.
+// ---------------------------------------------------------------------------
 resource webContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: 'penancias-web'
   location: location
@@ -848,6 +746,7 @@ resource webContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
 // 14. Role assignments — least-privilege access for the managed identity.
 //     Key Vault Secrets User lets the identity (and the Api app's
 //     system-assigned identity) resolve the Key Vault references above.
+//     Fixed role IDs per https://learn.microsoft.com/en-us/azure/role-based-access-control/built-in-roles
 // ---------------------------------------------------------------------------
 resource kvSecretsUserIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, appIdentity.id, 'kv-secrets-user')
@@ -870,8 +769,8 @@ resource kvSecretsUserApi 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 }
 
 resource storageContributorIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(mediaStorage.id, appIdentity.id, 'blob-data-contributor')
-  scope: mediaStorage
+  name: guid(storageModule.outputs.mediaStorageId, appIdentity.id, 'blob-data-contributor')
+  scope: storageModule.outputs.mediaStorageId
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe') // Storage Blob Data Contributor
     principalId: appIdentity.properties.principalId
@@ -883,7 +782,7 @@ resource sbSenderIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   name: guid(serviceBusNamespace.id, appIdentity.id, 'sb-data-sender')
   scope: serviceBusNamespace
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c364aba14') // Service Bus Data Sender
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39') // Azure Service Bus Data Sender
     principalId: appIdentity.properties.principalId
     principalType: 'ServicePrincipal'
   }
@@ -893,7 +792,7 @@ resource sbReceiverIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01'
   name: guid(serviceBusNamespace.id, appIdentity.id, 'sb-data-receiver')
   scope: serviceBusNamespace
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e1') // Service Bus Data Receiver
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0') // Azure Service Bus Data Receiver
     principalId: appIdentity.properties.principalId
     principalType: 'ServicePrincipal'
   }
@@ -903,31 +802,8 @@ resource acrPullIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
   name: guid(acr.id, appIdentity.id, 'acr-pull')
   scope: acr
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7df-24f1b5b4a5b6') // AcrPull
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull
     principalId: appIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Phase 2 Step 2.1: Event Grid role assignments
-// User-assigned identity needs EventGrid EventSubscription Contributor to manage subscriptions
-resource eventGridSenderIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(eventGridTopic.id, appIdentity.id, 'eventgrid-sender')
-  scope: eventGridTopic
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '426e0c7f-1c7e-4f81-934e-3811a9d0c3f3') // EventGrid Data Sender
-    principalId: appIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// Event Grid system topic's managed identity needs Storage Queue Data Contributor to publish to queues
-resource eventGridQueueSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(mediaStorage.id, 'eventgrid-queue-sender')
-  scope: mediaStorage
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855ec06ac4') // Storage Queue Data Contributor
-    principalId: eventGridTopic.identity.principalId
     principalType: 'ServicePrincipal'
   }
 }
@@ -935,8 +811,10 @@ resource eventGridQueueSender 'Microsoft.Authorization/roleAssignments@2022-04-0
 // ---------------------------------------------------------------------------
 // Outputs — referenced by CI/CD pipeline and application configuration
 // ---------------------------------------------------------------------------
-output mediaStorageName string = mediaStorage.name
-output functionStorageName string = functionStorage.name
+output mediaStorageName string = storageModule.outputs.mediaStorageName
+output mediaStorageId string = storageModule.outputs.mediaStorageId
+output functionStorageName string = storageModule.outputs.functionStorageName
+output functionStorageId string = storageModule.outputs.functionStorageId
 output serviceBusNamespaceName string = serviceBusNamespace.name
 output serviceBusFqdn string = '${serviceBusNamespace.name}.servicebus.windows.net'
 output acrLoginServer string = acr.properties.loginServer
@@ -957,5 +835,9 @@ output webContainerAppFqdn string = webContainerApp.properties.configuration.ing
 output entraWebClientId string = entraWebClientId
 output gotenbergContainerAppName string = gotenbergContainerApp.name
 output gotenbergFqdn string = gotenbergContainerApp.properties.configuration.ingress.fqdn
-output eventGridTopicName string = eventGridTopic.name
-output eventGridTopicEndpoint string = eventGridTopic.properties.endpoint
+output eventGridTopicName string = eventGridModule.outputs.eventGridTopicName
+output eventGridTopicId string = eventGridModule.outputs.eventGridTopicId
+output scanTopicName string = defenderModule.outputs.scanTopicName
+output scanTopicId string = defenderModule.outputs.scanTopicId
+output scanTopicEndpoint string = defenderModule.outputs.scanTopicEndpoint
+output blobCreatedQueueName string = eventGridModule.outputs.blobCreatedQueueName
