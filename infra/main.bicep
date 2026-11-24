@@ -147,6 +147,94 @@ resource clinicalStateShare 'Microsoft.Storage/storageAccounts/fileServices/shar
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2 Step 2.1: Defender for Storage — malware scanning on all blobs
+// ---------------------------------------------------------------------------
+resource defenderStorage 'Microsoft.Security/pricings@2023-01-01-preview' = {
+  name: 'StorageAccounts'
+  location: location
+  properties: {
+    pricingTier: 'Standard'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 Step 2.1: Event Grid System Topic for Blob Events
+//    Captures BlobCreated, BlobDeleted for upload scan & verification pipeline
+// ---------------------------------------------------------------------------
+resource eventGridTopic 'Microsoft.EventGrid/systemTopics@2023-06-01-preview' = {
+  name: 'egst-${prefix}-storage'
+  location: location
+  tags: commonTags
+  identity: {
+    type: 'SystemAssigned'
+  }
+  properties: {
+    topicType: 'Microsoft.Storage.StorageAccounts'
+    source: mediaStorage.id
+  }
+}
+
+// Subscription: blob created -> scan queue (Step 2.3/2.4 will wire receiver)
+resource egSubscriptionBlobCreated 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2023-06-01-preview' = {
+  parent: eventGridTopic
+  name: 'blob-created-subscription'
+  properties: {
+    destination: {
+      endpointType: 'StorageQueue'
+      properties: {
+        storageQueueDestination: {
+          resourceId: mediaStorage.id
+          queueName: 'blob-created-events'
+        }
+      }
+    }
+    filter: {
+      includedEventTypes: [
+        'Microsoft.Storage.BlobCreated'
+      ]
+      enableAdvancedFilteringOnArrays: false
+    }
+    eventDeliverySchema: 'CloudEventSchemaV1_0'
+  }
+}
+
+// Subscription: blob deleted -> cleanup handling
+resource egSubscriptionBlobDeleted 'Microsoft.EventGrid/systemTopics/eventSubscriptions@2023-06-01-preview' = {
+  parent: eventGridTopic
+  name: 'blob-deleted-subscription'
+  properties: {
+    destination: {
+      endpointType: 'StorageQueue'
+      properties: {
+        storageQueueDestination: {
+          resourceId: mediaStorage.id
+          queueName: 'blob-deleted-events'
+        }
+      }
+    }
+    filter: {
+      includedEventTypes: [
+        'Microsoft.Storage.BlobDeleted'
+      ]
+      enableAdvancedFilteringOnArrays: false
+    }
+    eventDeliverySchema: 'CloudEventSchemaV1_0'
+  }
+}
+
+// Storage queues for Event Grid event handling
+resource queueService 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = {
+  parent: mediaStorage
+  name: 'default'
+}
+
+resource eventQueues 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = [for q in ['blob-created-events', 'blob-deleted-events']: {
+  parent: queueService
+  name: q
+  properties: {}
+}]
+
+// ---------------------------------------------------------------------------
 // 4. Storage Account 2: Durable Functions Internal State
 // ---------------------------------------------------------------------------
 resource functionStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
@@ -821,6 +909,29 @@ resource acrPullIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
   }
 }
 
+// Phase 2 Step 2.1: Event Grid role assignments
+// User-assigned identity needs EventGrid EventSubscription Contributor to manage subscriptions
+resource eventGridSenderIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(eventGridTopic.id, appIdentity.id, 'eventgrid-sender')
+  scope: eventGridTopic
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '426e0c7f-1c7e-4f81-934e-3811a9d0c3f3') // EventGrid Data Sender
+    principalId: appIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Event Grid system topic's managed identity needs Storage Queue Data Contributor to publish to queues
+resource eventGridQueueSender 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(mediaStorage.id, 'eventgrid-queue-sender')
+  scope: mediaStorage
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855ec06ac4') // Storage Queue Data Contributor
+    principalId: eventGridTopic.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Outputs — referenced by CI/CD pipeline and application configuration
 // ---------------------------------------------------------------------------
@@ -846,3 +957,5 @@ output webContainerAppFqdn string = webContainerApp.properties.configuration.ing
 output entraWebClientId string = entraWebClientId
 output gotenbergContainerAppName string = gotenbergContainerApp.name
 output gotenbergFqdn string = gotenbergContainerApp.properties.configuration.ingress.fqdn
+output eventGridTopicName string = eventGridTopic.name
+output eventGridTopicEndpoint string = eventGridTopic.properties.endpoint
