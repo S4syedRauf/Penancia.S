@@ -1406,6 +1406,21 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
   - `bash tools/check_queue_wiring.sh` & `bash tools/check_queue_wiring.test.sh` → PASS (4/4 tests passed).
   - `bash tools/check_changelog.test.sh` → PASS (4/4 tests passed).
   - Mutation testing (3/3 CAUGHT): `D-OwnerCheck`, `D-DeletedFilter`, `D-ScanVerdictField`.
+- **Commit(s):** `7e22b9b` (branch `phase-2/upload-and-submit`)
+
+---
+
+### CL-0032 — CI Fix: Enable QUOTED_IDENTIFIER (-I) in sqlcmd for Filtered Outbox Index
+
+- **Date (UTC):** 2026-11-24T19:43:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / CI Verification Fix
+- **Type:** Fixed
+- **Prior Commit Record:** `CL-0031` landed at `7e22b9b` on `phase-2/upload-and-submit`.
+- **Summary:** Added `-I` (`SET QUOTED_IDENTIFIER ON`) to `sqlcmd` invocations in `tools/verify_migrations.sh` so SQL Server 2022 accepts the filtered unique index `IX_OutboxMessages_IdempotencyKey` (`WHERE [IdempotencyKey] IS NOT NULL`) during CI migration verification.
+- **Files changed:**
+  - `tools/verify_migrations.sh` — added `-I` flag to `sqlcmd`.
+  - `CHANGELOG.md` — appended CL-0032 entry.
 - **Commit(s):** pending (branch `phase-2/upload-and-submit`)
 
 ---

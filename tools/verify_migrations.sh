@@ -23,9 +23,9 @@ run_sqlcmd() {
   local sql="$2"
   
   if [ -n "${CONTAINER_ID:-}" ]; then
-    docker exec -i "$CONTAINER_ID" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C ${db:+-d "$db"} -Q "$sql" -b
+    docker exec -i "$CONTAINER_ID" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C -I ${db:+-d "$db"} -Q "$sql" -b
   elif command -v sqlcmd >/dev/null 2>&1; then
-    sqlcmd -S "${MSSQL_HOST},${MSSQL_PORT}" -U sa -P "$MSSQL_SA_PASSWORD" -C ${db:+-d "$db"} -Q "$sql" -b
+    sqlcmd -S "${MSSQL_HOST},${MSSQL_PORT}" -U sa -P "$MSSQL_SA_PASSWORD" -C -I ${db:+-d "$db"} -Q "$sql" -b
   else
     echo "ERROR: Neither docker mssql container nor sqlcmd command found." >&2
     exit 1
@@ -42,9 +42,9 @@ run_sqlfile() {
   python3 -c "import sys; content = open(sys.argv[1], 'rb').read().lstrip(b'\xef\xbb\xbf'); open(sys.argv[2], 'wb').write(content)" "$file" "$clean_file"
 
   if [ -n "${CONTAINER_ID:-}" ]; then
-    docker exec -i "$CONTAINER_ID" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C ${db:+-d "$db"} -b < "$clean_file"
+    docker exec -i "$CONTAINER_ID" /opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P "$MSSQL_SA_PASSWORD" -C -I ${db:+-d "$db"} -b < "$clean_file"
   elif command -v sqlcmd >/dev/null 2>&1; then
-    sqlcmd -S "${MSSQL_HOST},${MSSQL_PORT}" -U sa -P "$MSSQL_SA_PASSWORD" -C ${db:+-d "$db"} -i "$clean_file" -b
+    sqlcmd -S "${MSSQL_HOST},${MSSQL_PORT}" -U sa -P "$MSSQL_SA_PASSWORD" -C -I ${db:+-d "$db"} -i "$clean_file" -b
   else
     echo "ERROR: Neither docker mssql container nor sqlcmd command found." >&2
     rm -f "$clean_file"
