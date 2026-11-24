@@ -14,15 +14,11 @@ public class SqlServerCalibrationTests
     private static string? GetConnectionString() =>
         Environment.GetEnvironmentVariable("TEST_SQLSERVER_CONNECTION_STRING");
 
-    [Fact]
+    [SkippableFact]
     public async Task SqlServer_CalibrationResultService_AppliesValidResult_AndUpdatesSample()
     {
         string? connString = GetConnectionString();
-        if (string.IsNullOrWhiteSpace(connString))
-        {
-            // Skip test when real SQL Server connection string is not provided
-            return;
-        }
+        Skip.If(string.IsNullOrWhiteSpace(connString), "TEST_SQLSERVER_CONNECTION_STRING is not set.");
 
         var options = new DbContextOptionsBuilder<PenanciaDbContext>()
             .UseSqlServer(connString)

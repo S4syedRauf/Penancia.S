@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Penancia.S.Data;
 using Penancia.S.Data.Entities;
+using Penancia.S.Domain.Model;
 
 namespace Penancia.S.Api.Services;
 
@@ -79,23 +80,60 @@ public class CalibrationResultService : ICalibrationResultService
 
         if (string.Equals(result.Status, "Valid", StringComparison.OrdinalIgnoreCase))
         {
-            if (!result.MeasuredPitchPx.HasValue || result.MeasuredPitchPx.Value <= 0)
-                return CalibrationApplyResult.Fail("MeasuredPitchPx must be positive for Valid calibration.");
+            // Server-side re-checks per F2(b) before marking Valid
+            string? rejectReason = null;
 
-            if (!result.MicronsPerPixel.HasValue || result.MicronsPerPixel.Value <= 0)
-                return CalibrationApplyResult.Fail("MicronsPerPixel must be positive for Valid calibration.");
-
-            if (cal.ReferencePitchUm <= 0)
-                return CalibrationApplyResult.Fail("ReferencePitchUm on calibration record must be positive.");
-
-            double expectedUmPerPx = cal.ReferencePitchUm / result.MeasuredPitchPx.Value;
-            if (Math.Abs(expectedUmPerPx - result.MicronsPerPixel.Value) > 0.005)
+            if (!result.MeasuredPitchPx.HasValue || result.MeasuredPitchPx.Value <= 0 ||
+                !result.MicronsPerPixel.HasValue || result.MicronsPerPixel.Value <= 0)
             {
-                return CalibrationApplyResult.Fail(
-                    $"Scale factor mismatch: expected {expectedUmPerPx:F4} from reference pitch {cal.ReferencePitchUm} µm / {result.MeasuredPitchPx.Value} px, but received {result.MicronsPerPixel.Value:F4}.");
+                rejectReason = "INVALID_MEASUREMENT";
+            }
+            else if (cal.ReferencePitchUm <= 0)
+            {
+                rejectReason = "INVALID_REFERENCE_PITCH";
+            }
+            else if (!result.LinesDetected.HasValue || result.LinesDetected.Value < ProvisionalCalibrationConstants.MinLinesDetected)
+            {
+                rejectReason = "INSUFFICIENT_LINES_DETECTED";
+            }
+            else if (!result.SpacingCvPct.HasValue || result.SpacingCvPct.Value > ProvisionalCalibrationConstants.MaxSpacingCvPct)
+            {
+                rejectReason = "SPACING_VARIATION_EXCEEDED";
+            }
+            else if (string.IsNullOrWhiteSpace(result.ToolVersion))
+            {
+                rejectReason = "MISSING_TOOL_VERSION";
+            }
+            else
+            {
+                // Relative tolerance check: |µm/px − (ReferencePitchUm / MeasuredPitchPx)| / expected <= RelativeScaleTolerance (0.1%)
+                double expectedUmPerPx = cal.ReferencePitchUm / result.MeasuredPitchPx.Value;
+                double relativeError = Math.Abs(result.MicronsPerPixel.Value - expectedUmPerPx) / expectedUmPerPx;
+                if (relativeError > ProvisionalCalibrationConstants.RelativeScaleTolerance)
+                {
+                    rejectReason = "SCALE_FACTOR_MISMATCH";
+                }
             }
 
-            int validityDays = _configuration.GetValue<int?>("Calibration:ValidityDays") ?? 7;
+            if (rejectReason != null)
+            {
+                _logger.LogWarning("Calibration {CalibrationId} failed server validation and was marked Rejected: {Reason}", calibrationId, rejectReason);
+                cal.Status = "Rejected";
+                cal.RejectReason = rejectReason;
+                cal.MeasuredPitchPx = result.MeasuredPitchPx;
+                cal.MicronsPerPixel = result.MicronsPerPixel;
+                cal.LinesDetected = result.LinesDetected;
+                cal.SpacingCvPct = result.SpacingCvPct;
+                cal.ImageWidthPx = result.ImageWidthPx;
+                cal.ImageHeightPx = result.ImageHeightPx;
+                cal.ToolVersion = result.ToolVersion;
+                cal.ExpiresAtUtc = null;
+
+                await _db.SaveChangesAsync(cancellationToken);
+                return CalibrationApplyResult.Ok("Rejected");
+            }
+
+            int validityDays = _configuration.GetValue<int?>("Calibration:ValidityDays") ?? ProvisionalCalibrationConstants.DefaultValidityDays;
 
             cal.Status = "Valid";
             cal.MeasuredPitchPx = result.MeasuredPitchPx;
@@ -120,6 +158,7 @@ public class CalibrationResultService : ICalibrationResultService
             cal.Status = "Rejected";
             cal.RejectReason = string.IsNullOrWhiteSpace(result.RejectReason) ? "CALIBRATION_REJECTED" : result.RejectReason;
             cal.MeasuredPitchPx = result.MeasuredPitchPx;
+            cal.MicronsPerPixel = result.MicronsPerPixel;
             cal.LinesDetected = result.LinesDetected;
             cal.SpacingCvPct = result.SpacingCvPct;
             cal.ImageWidthPx = result.ImageWidthPx;

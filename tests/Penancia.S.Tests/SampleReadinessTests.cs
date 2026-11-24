@@ -562,6 +562,48 @@ public class SampleReadinessTests
     }
 
     [Fact]
+    public void SampleReadiness_VideoAssetNotReady_AndCalibrationVerified_ReturnsMediaNotReady()
+    {
+        // R7: video/image asset not ready (Status = "Issued") + calibration asset Verified -> NOT ready (returns MEDIA_NOT_UPLOADED_OR_VERIFIED)
+        var sample = CreateValidSample();
+        var mediaAssets = new List<MediaAssetReadinessSnapshot>
+        {
+            new(Guid.NewGuid(), "Verified", "calibration"),
+            new(Guid.NewGuid(), "Issued", "video")
+        };
+
+        var result = SampleReadiness.Check(sample, mediaAssets);
+
+        Assert.False(result.IsReady);
+        Assert.Contains(PrerequisiteReasonCodes.MediaNotUploadedOrVerified, result.MissingReasons);
+    }
+
+    [Fact]
+    public async Task TriggerAnalysis_WhenPrerequisitesMissing_Returns422_AndNeverCallsWorkflow()
+    {
+        // V1: TriggerAnalysis returns 422 with reason list when readiness fails and does not call workflow starter.
+        var (db, controller, handler) = CreateSamplesController();
+        string sampleId = "sample-v1-unready";
+        var sample = new SampleEntity
+        {
+            SampleId = sampleId,
+            CreatedBy = "user-123",
+            State = "Draft",
+            WorkflowMode = "prescreen",
+            ConsentAtUtc = null // Missing consent -> unready
+        };
+        db.Samples.Add(sample);
+        await db.SaveChangesAsync();
+
+        var actionResult = await controller.TriggerAnalysis(sampleId);
+        var objectResult = Assert.IsType<ObjectResult>(actionResult);
+        Assert.Equal(422, objectResult.StatusCode);
+
+        // Assert workflow HTTP client was NEVER invoked
+        Assert.Null(handler.LastRequest);
+    }
+
+    [Fact]
     public async Task ValidateFilesActivity_VerifiesStoredTruth_WithoutModifyingSample()
     {
         var options = new DbContextOptionsBuilder<PenanciaDbContext>()

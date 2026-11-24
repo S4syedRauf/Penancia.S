@@ -705,6 +705,86 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0018 — Round 4 Review Hardening: Security Gating, Calibration Scale Invariants, Parity & CI Proofs
+
+- **Date (UTC):** 2026-11-24T06:50:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 1 / Review Round 4 Fix Batch (F1–F8)
+- **Issue IDs:** ISS-001, ISS-002, ISS-003
+- **Type:** Added & Changed & Fixed & Security & Correction
+- **Summary:**
+  1. **Append-Only Corrections & Acknowledged Violations:**
+     - `CL-0017` recorded commit as pending; its commit on `phase-1/data-foundation` is `be07435` (`2026-11-23T21:29:58Z`).
+     - Intermediate commits prior to CL-0018:
+       - `99b1eb7` (`2026-11-23T21:34:50Z`): break circular FK dependency on SQL Server test seeding and cleanup.
+       - `6129305` (`2026-11-23T21:40:32Z`): point SQL Server integration tests to migrated `db_fresh` database in CI.
+     - Acknowledged violation: `CL-0012` and `CL-0013` were edited in place earlier in the development lifecycle; strictly preserving append-only changelog integrity going forward.
+  2. **F1: Security Gating on Optical Calibration API (`CalibrationController.cs`):**
+     - Completely removed HTTP endpoint `POST v1/semen/samples/{sampleId}/calibration/{calibrationId}/result` and removed `ICalibrationResultService` injection from `CalibrationController`.
+     - Direct client/worker result posting is blocked. Model worker results must be consumed exclusively via internal background event/message consumer (Step 4.1).
+     - Added reflection test `CalibrationController_HasNoEndpoint_AcceptingCalibrationResultDto` asserting no action method on `CalibrationController` accepts `CalibrationResultDto`.
+  3. **F2: CalibrationResultService Hardening & Provisional Constants (`CalibrationResultService.cs`, `ProvisionalCalibrationConstants.cs`):**
+     - Created `src/Penancia.S.Domain/Model/ProvisionalCalibrationConstants.cs` defining `MinLinesDetected = 6`, `MaxSpacingCvPct = 5.0`, `RelativeScaleTolerance = 0.001` (0.1% relative tolerance), and `DefaultValidityDays = 7`, explicitly labelled `PROVISIONAL` pending Phase 10 clinical validation.
+     - Relative scale tolerance check: `|µm/px − (ReferencePitchUm / MeasuredPitchPx)| / expected <= 0.001` (0.1% relative scale tolerance replacing legacy 0.005 absolute threshold).
+     - Server-side pre-validation re-checks before setting `Valid`: `LinesDetected >= 6`, `SpacingCvPct <= 5.0`, `MeasuredPitchPx > 0`, `MicronsPerPixel > 0`, and non-empty `ToolVersion`. If any check fails, stores `Status = "Rejected"` with specific reason code (`INSUFFICIENT_LINES_DETECTED`, `SPACING_VARIATION_EXCEEDED`, `MISSING_TOOL_VERSION`, `SCALE_FACTOR_MISMATCH`), never `Valid`.
+     - Default validity: when `Calibration:ValidityDays` is unconfigured, defaults to 7 days (`ExpiresAtUtc = DateTime.UtcNow.AddDays(7)`).
+     - Preserves sample scale: if sample links a different calibration, `sample.MicronsPerPixel` is untouched.
+     - Enforces terminal state immutability: terminal `Valid` or `Rejected` refuses different result with failure; identical replay succeeds idempotently.
+  4. **F3: Readiness Tests for Media & Workflow Decoupling (`SampleReadinessTests.cs`):**
+     - Test `R7`: `SampleReadiness_VideoAssetNotReady_AndCalibrationVerified_ReturnsMediaNotReady` verifies that a verified calibration image combined with an unready video asset (e.g. `Issued`) fails readiness with `MEDIA_NOT_UPLOADED_OR_VERIFIED`.
+     - Test `V1`: `TriggerAnalysis_WhenPrerequisitesMissing_Returns422_AndNeverCallsWorkflow` verifies that failing readiness returns 422 with structured missing reason codes and proves workflow HTTP client is never invoked.
+  5. **F4: Python Calibration Worker Hardening (`models/calibration/test_calibration.py`):**
+     - Updated near-threshold spacing CV test: CV ≈ 4.2% passes as `Valid`; CV ≈ 5.9% is rejected with `EXCESSIVE_SPACING_VARIANCE`. Strictly kills mutations loosening 5.0% threshold to 6.5%.
+     - Added optical blur test (`test_synthetic_ruling_optical_blur`) verifying Gaussian blur sigma=1.2 stays `Valid` within 0.5% scale error.
+     - Added vignetting test (`test_synthetic_ruling_lens_vignetting`) verifying 35% radial intensity falloff stays `Valid` within 0.5% scale error.
+  6. **F5: Bidirectional Frontend Chamber & Target Parity (`physicalCatalogues.test.ts`):**
+     - Rewrote `frontend/src/data/physicalCatalogues.test.ts` to parse C# definitions from `src/Penancia.S.Domain/Model/Catalogues.cs` and TS definitions from `physicalCatalogues.ts` into Map collections.
+     - Asserts chamber ID sets match in both directions, display names match, datasheet URLs match, and `DepthUm` matches per chamber ID.
+     - Asserts calibration target ID sets match in both directions, display names match, datasheet URLs match, and `PitchUm` matches per target ID.
+     - Mutation proof: changing `DepthUm` 20.0 -> 25.0 in `Catalogues.cs` failed test immediately with `AssertionError: DepthUm mismatch for chamber leja-sc-20-01-02-b-ce: TS=20, C#=25`. Reverted cleanly.
+  7. **F6: CI Migration Script Parity & Real SQL Server Integration Tests (`deploy.yml`, `SqlServerCalibrationTests.cs`):**
+     - Added `Verify idempotent migration script matches migrations.sql` step in `.github/workflows/deploy.yml`: runs `dotnet ef migrations script --idempotent`, normalizes BOM and CRLF, and diffs against committed `migrations.sql`. Exits 1 on any discrepancy.
+     - Mutation proof: appending comment to `migrations.sql` caused diff to exit 1. Reverted cleanly.
+     - Added `[SkippableFact]` to `SqlServerCalibrationTests.cs`: skips with message when `TEST_SQLSERVER_CONNECTION_STRING` is unset.
+     - CI fails on missing connection string or skipped tests in step `Run SQL Server Integration Tests`.
+- **Why:** Resolve all Round 4 review findings, enforce strict API security boundary for calibration results, harden server-side optical scale invariants, and establish mutation-proof regression testing across backend, frontend, worker, and CI pipelines.
+- **Files changed:**
+  - `src/Penancia.S.Domain/Model/ProvisionalCalibrationConstants.cs` — provisional threshold constants
+  - `src/Penancia.S.Api/Controllers/V1/CalibrationController.cs` — removed public result POST route
+  - `src/Penancia.S.Api/Services/CalibrationResultService.cs` — hardened re-checks, 0.1% relative tolerance, default expiry
+  - `tests/Penancia.S.Tests/CalibrationApiTests.cs` — F1 route removal test, Q2 relative tolerance tests, Q4 default expiry test, Q6 sample isolation test, Q8 terminal state test, server re-check tests
+  - `tests/Penancia.S.Tests/SampleReadinessTests.cs` — R7 media unready test, V1 workflow decoupling test
+  - `tests/Penancia.S.Tests/SqlServerCalibrationTests.cs` — [SkippableFact] annotation
+  - `tests/Penancia.S.Tests/Penancia.S.Tests.csproj` — added Xunit.SkippableFact package
+  - `models/calibration/test_calibration.py` — near-threshold CV 4.2% vs 5.9%, blur test, vignetting test
+  - `frontend/src/data/physicalCatalogues.test.ts` — bidirectional regex map parity tests
+  - `.github/workflows/deploy.yml` — migration script parity diff step, SQL Server skip failure assertion
+  - `CHANGELOG.md` — appended CL-0018
+- **Behaviour before → after:**
+  - Public result posting route removed; calibration results can only be processed via internal service.
+  - Scale factor validation enforces 0.1% relative tolerance instead of 0.005 absolute tolerance.
+  - Substandard calibrations (CV > 5%, lines < 6, missing version) are automatically rejected by server.
+  - SQL Server tests skip when connection string is unset locally; CI asserts execution and fails on skip.
+- **Contract / schema / API changes:** Removed `POST v1/semen/samples/{sampleId}/calibration/{calibrationId}/result`.
+- **Database migration:** none (schema unchanged from Step 1.1)
+- **Config / env / infra changes:** none
+- **Tests run:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 238 passed, 1 skipped (SqlServer without conn string), 0 failed
+  - `.venv/bin/pytest models/calibration -v` → 16 passed in 1.62s
+  - `cd frontend && bun test && bun run lint && bun run build` → 29 passed, 0 lint errors, build succeeded
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed (exit 0)
+- **Known gaps / risks (F7):**
+  - `TriggerAnalysis` still re-previews `FilesValidated` when state is `Validating` (Step 2.5 idempotency).
+  - `get_tool_version` runs git in a subprocess (use a build-time `TOOL_VERSION` later).
+  - worker `process()` passes "container/blob" to `cv2.imread` (CLI-only until Step 4.1).
+  - Outbox dispatcher not built (Step 3.3).
+  - Model-results receiver not built (Step 4.1), so end to end no calibration becomes `Valid` yet.
+- **Rollback:** Revert commit on `phase-1/data-foundation`.
+- **Follow-ups for the next developer or model:** Do not merge PR #2. Await reviewer sign-off for Phase 1.
+- **Commit(s):** pending for this CL-0018 entry
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did

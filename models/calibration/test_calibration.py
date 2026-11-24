@@ -202,30 +202,69 @@ def test_synthetic_ruling_non_integer_pitch_subpixel():
 
 def test_near_threshold_spacing_cv():
     """
-    B5: Asserts near-threshold behaviour:
-    - Real CV ~3% passes as Valid.
-    - Real CV ~7% is rejected as EXCESSIVE_SPACING_VARIANCE.
+    F4 / B5: Asserts near-threshold behaviour:
+    - Real CV ~4.2% passes as Valid.
+    - Real CV ~5.9% is rejected as EXCESSIVE_SPACING_VARIANCE.
+    Loosening 5% limit to 6.5% will cause the 5.9% case to pass, failing this test.
     """
     pitch = 25.0
     start_x = 100.0
     ref_pitch_um = 10.0
 
-    # 1. Near threshold ~3% CV:
-    jitters_3 = [0.0, 0.4, -0.3, 0.5, -0.4, 0.3, -0.3, 0.4, -0.3, 0.4, -0.4, 0.3]
-    positions_3 = [start_x + i * pitch + jitters_3[i] for i in range(len(jitters_3))]
-    img_3 = create_synthetic_ruling(line_positions=positions_3, subpixel_antialiasing=True)
-    res_3 = calibrate_ruling(img_3, ref_pitch_um)
-    assert res_3["status"] == "Valid"
-    assert 2.0 <= res_3["spacing_cv_pct"] <= 4.0
+    # 1. Near threshold ~4.2% CV (passes <= 5.0%):
+    jitters_4 = [0.0, 0.55, -0.45, 0.65, -0.55, 0.45, -0.45, 0.55, -0.45, 0.55, -0.55, 0.45]
+    positions_4 = [start_x + i * pitch + jitters_4[i] for i in range(len(jitters_4))]
+    img_4 = create_synthetic_ruling(line_positions=positions_4, subpixel_antialiasing=True)
+    res_4 = calibrate_ruling(img_4, ref_pitch_um)
+    assert res_4["status"] == "Valid"
+    assert 4.0 <= res_4["spacing_cv_pct"] <= 4.5
 
-    # 2. Near threshold ~7% CV:
-    jitters_7 = [0.0, 1.0, -0.8, 1.1, -0.9, 0.8, -0.9, 1.0, -0.8, 1.0, -0.9, 0.8]
-    positions_7 = [start_x + i * pitch + jitters_7[i] for i in range(len(jitters_7))]
-    img_7 = create_synthetic_ruling(line_positions=positions_7, subpixel_antialiasing=True)
-    res_7 = calibrate_ruling(img_7, ref_pitch_um)
-    assert res_7["status"] == "Rejected"
-    assert "EXCESSIVE_SPACING_VARIANCE" in res_7["reject_reason"]
-    assert res_7["spacing_cv_pct"] > 5.0
+    # 2. Near threshold ~5.9% CV (rejected > 5.0%; would fail if limit loosened to 6.5%):
+    jitters_59 = [0.0, 0.75, -0.65, 0.85, -0.75, 0.65, -0.65, 0.75, -0.65, 0.75, -0.75, 0.65]
+    positions_59 = [start_x + i * pitch + jitters_59[i] for i in range(len(jitters_59))]
+    img_59 = create_synthetic_ruling(line_positions=positions_59, subpixel_antialiasing=True)
+    res_59 = calibrate_ruling(img_59, ref_pitch_um)
+    assert res_59["status"] == "Rejected"
+    assert "EXCESSIVE_SPACING_VARIANCE" in res_59["reject_reason"]
+    assert 5.5 <= res_59["spacing_cv_pct"] <= 6.0
+
+
+def test_synthetic_ruling_optical_blur():
+    """
+    F4: Asserts that a blurred grating (Gaussian blur sigma=1.2) remains Valid
+    with scale factor within 0.5% of exact known physical ratio.
+    """
+    known_pitch_px = 25.0
+    reference_pitch_um = 10.0
+    expected_um_per_px = reference_pitch_um / known_pitch_px
+
+    img_blurred = create_synthetic_ruling(pitch_px=known_pitch_px, num_lines=12, blur_sigma=1.2)
+    result = calibrate_ruling(img_blurred, reference_pitch_um=reference_pitch_um)
+
+    assert result["status"] == "Valid"
+    assert result["lines_detected"] >= MIN_LINES_PROVISIONAL
+    measured_um_per_px = result["microns_per_pixel"]
+    error_pct = abs(measured_um_per_px - expected_um_per_px) / expected_um_per_px * 100.0
+    assert error_pct <= 0.5, f"Blurred grating error {error_pct:.3f}% exceeds 0.5% tolerance"
+
+
+def test_synthetic_ruling_lens_vignetting():
+    """
+    F4: Asserts that a vignetted grating (35% radial intensity falloff) remains Valid
+    with scale factor within 0.5% of exact known physical ratio.
+    """
+    known_pitch_px = 25.0
+    reference_pitch_um = 10.0
+    expected_um_per_px = reference_pitch_um / known_pitch_px
+
+    img_vignetted = create_synthetic_ruling(pitch_px=known_pitch_px, num_lines=12, vignette_pct=35.0)
+    result = calibrate_ruling(img_vignetted, reference_pitch_um=reference_pitch_um)
+
+    assert result["status"] == "Valid"
+    assert result["lines_detected"] >= MIN_LINES_PROVISIONAL
+    measured_um_per_px = result["microns_per_pixel"]
+    error_pct = abs(measured_um_per_px - expected_um_per_px) / expected_um_per_px * 100.0
+    assert error_pct <= 0.5, f"Vignetted grating error {error_pct:.3f}% exceeds 0.5% tolerance"
 
 
 def test_bright_lines_dark_background_polarity():

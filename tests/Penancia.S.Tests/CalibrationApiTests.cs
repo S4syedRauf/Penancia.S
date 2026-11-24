@@ -36,7 +36,7 @@ public class CalibrationApiTests
 
         var service = new CalibrationResultService(db, config, NullLogger<CalibrationResultService>.Instance);
         var logger = NullLogger<CalibrationController>.Instance;
-        var controller = new CalibrationController(logger, db, config, service);
+        var controller = new CalibrationController(logger, db, config);
 
         var claims = new List<Claim>
         {
@@ -395,7 +395,20 @@ public class CalibrationApiTests
     }
 
     [Fact]
-    public async Task CalibrationResultService_RejectsScaleFactorMismatch()
+    public void CalibrationController_HasNoEndpoint_AcceptingCalibrationResultDto()
+    {
+        // F1: Asserts that no HTTP endpoint on CalibrationController accepts CalibrationResultDto.
+        // Direct worker-to-API result posting is blocked. Model results must arrive via internal consumer.
+        var methods = typeof(CalibrationController).GetMethods();
+        foreach (var method in methods)
+        {
+            var parameters = method.GetParameters();
+            Assert.DoesNotContain(parameters, p => p.ParameterType == typeof(CalibrationResultDto));
+        }
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_RejectsScaleFactorMismatch_BeyondTolerance()
     {
         var (db, _, service) = CreateSut();
         string sampleId = "sample-mismatch";
@@ -419,15 +432,295 @@ public class CalibrationApiTests
             Status = "Valid",
             MeasuredPitchPx = 25.0,
             MicronsPerPixel = 0.8000,
-            LinesDetected = 12
+            LinesDetected = 12,
+            SpacingCvPct = 1.0,
+            ToolVersion = "1.0.0-phase1+sha123"
         };
 
         var applyResult = await service.ApplyAsync(cal.CalibrationId, resultDto);
-        Assert.False(applyResult.Success);
-        Assert.Contains("Scale factor mismatch", applyResult.ErrorMessage);
+        Assert.True(applyResult.Success);
+        Assert.Equal("Rejected", applyResult.Status);
 
         var freshCal = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal.CalibrationId);
-        Assert.Equal("Pending", freshCal.Status);
+        Assert.Equal("Rejected", freshCal.Status);
+        Assert.Equal("SCALE_FACTOR_MISMATCH", freshCal.RejectReason);
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_RelativeTolerance_Accepts0Point01Percent_Rejects1Percent()
+    {
+        // Q2: 0.1% relative tolerance. Ref 10 µm, pitch 25 px -> expected 0.4000 µm/px.
+        // 0.404 (1% off) must be stored as Rejected (SCALE_FACTOR_MISMATCH).
+        // 0.40004 (0.01% off) must be stored as Valid.
+        var (db, _, service) = CreateSut();
+
+        // 1. Test 1% off -> Rejected
+        var cal1 = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-q2-1",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal1);
+        await db.SaveChangesAsync();
+
+        var resReject = await service.ApplyAsync(cal1.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.404, // 1% off
+            LinesDetected = 10,
+            SpacingCvPct = 2.0,
+            ToolVersion = "1.0.0-phase1+test"
+        });
+        Assert.True(resReject.Success);
+        Assert.Equal("Rejected", resReject.Status);
+        var refreshedCal1 = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal1.CalibrationId);
+        Assert.Equal("Rejected", refreshedCal1.Status);
+        Assert.Equal("SCALE_FACTOR_MISMATCH", refreshedCal1.RejectReason);
+
+        // 2. Test 0.01% off -> Valid
+        var cal2 = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-q2-2",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal2);
+        await db.SaveChangesAsync();
+
+        var resValid = await service.ApplyAsync(cal2.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.40004, // 0.01% off (within 0.1% relative tolerance)
+            LinesDetected = 10,
+            SpacingCvPct = 2.0,
+            ToolVersion = "1.0.0-phase1+test"
+        });
+        Assert.True(resValid.Success);
+        Assert.Equal("Valid", resValid.Status);
+        var refreshedCal2 = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal2.CalibrationId);
+        Assert.Equal("Valid", refreshedCal2.Status);
+        Assert.Null(refreshedCal2.RejectReason);
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_ServerRechecks_RejectsSubstandardResults()
+    {
+        // F2(b): Server re-checks: LinesDetected >= 6, SpacingCvPct <= 5.0, MeasuredPitchPx > 0, MicronsPerPixel > 0, ToolVersion not empty
+        var (db, _, service) = CreateSut();
+
+        // 1. Lines detected < 6
+        var calLines = new CalibrationEntity { CalibrationId = Guid.NewGuid(), SampleId = "s1", TargetId = "t1", ReferencePitchUm = 10.0, Status = "Pending" };
+        db.Calibrations.Add(calLines);
+        await db.SaveChangesAsync();
+        var resLines = await service.ApplyAsync(calLines.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 5, // < 6
+            SpacingCvPct = 2.0,
+            ToolVersion = "1.0.0-phase1+test"
+        });
+        Assert.Equal("Rejected", resLines.Status);
+        var calLinesDb = await db.Calibrations.FirstAsync(c => c.CalibrationId == calLines.CalibrationId);
+        Assert.Equal("INSUFFICIENT_LINES_DETECTED", calLinesDb.RejectReason);
+
+        // 2. Spacing CV > 5.0
+        var calCv = new CalibrationEntity { CalibrationId = Guid.NewGuid(), SampleId = "s2", TargetId = "t1", ReferencePitchUm = 10.0, Status = "Pending" };
+        db.Calibrations.Add(calCv);
+        await db.SaveChangesAsync();
+        var resCv = await service.ApplyAsync(calCv.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 5.5, // > 5.0
+            ToolVersion = "1.0.0-phase1+test"
+        });
+        Assert.Equal("Rejected", resCv.Status);
+        var calCvDb = await db.Calibrations.FirstAsync(c => c.CalibrationId == calCv.CalibrationId);
+        Assert.Equal("SPACING_VARIATION_EXCEEDED", calCvDb.RejectReason);
+
+        // 3. Missing ToolVersion
+        var calVer = new CalibrationEntity { CalibrationId = Guid.NewGuid(), SampleId = "s3", TargetId = "t1", ReferencePitchUm = 10.0, Status = "Pending" };
+        db.Calibrations.Add(calVer);
+        await db.SaveChangesAsync();
+        var resVer = await service.ApplyAsync(calVer.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 2.0,
+            ToolVersion = "" // empty
+        });
+        Assert.Equal("Rejected", resVer.Status);
+        var calVerDb = await db.Calibrations.FirstAsync(c => c.CalibrationId == calVer.CalibrationId);
+        Assert.Equal("MISSING_TOOL_VERSION", calVerDb.RejectReason);
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_DefaultValidityDays_IsSevenDays_WhenConfigMissing()
+    {
+        // Q4: with no config, ExpiresAtUtc defaults to DateTime.UtcNow.AddDays(7) (within ±1 min).
+        var options = new DbContextOptionsBuilder<PenanciaDbContext>()
+            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .Options;
+        var db = new PenanciaDbContext(options);
+        var emptyConfig = new ConfigurationBuilder().Build(); // No Calibration:ValidityDays
+        var service = new CalibrationResultService(db, emptyConfig, NullLogger<CalibrationResultService>.Instance);
+
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-q4",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal);
+        await db.SaveChangesAsync();
+
+        var before = DateTime.UtcNow.AddDays(7);
+        var result = await service.ApplyAsync(cal.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ToolVersion = "1.0.0-phase1+test"
+        });
+        var after = DateTime.UtcNow.AddDays(7);
+
+        Assert.True(result.Success);
+        var refreshed = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal.CalibrationId);
+        Assert.NotNull(refreshed.ExpiresAtUtc);
+        Assert.True(refreshed.ExpiresAtUtc >= before.AddMinutes(-1) && refreshed.ExpiresAtUtc <= after.AddMinutes(1));
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_DoesNotUpdateSample_WhenSampleLinksDifferentCalibration()
+    {
+        // Q6: if sample links a different calibration, sample's MicronsPerPixel is unchanged.
+        var (db, _, service) = CreateSut();
+        string sampleId = "sample-q6";
+        var otherCalibrationId = Guid.NewGuid();
+        var sample = new SampleEntity
+        {
+            SampleId = sampleId,
+            CreatedBy = "user-123",
+            State = "Draft",
+            CalibrationId = otherCalibrationId, // Links to a different calibration
+            MicronsPerPixel = 0.5555
+        };
+        db.Samples.Add(sample);
+
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = sampleId,
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal);
+        await db.SaveChangesAsync();
+
+        var result = await service.ApplyAsync(cal.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ToolVersion = "1.0.0-phase1+test"
+        });
+        Assert.True(result.Success);
+
+        var refreshedSample = await db.Samples.FirstAsync(s => s.SampleId == sampleId);
+        Assert.Equal(0.5555, refreshedSample.MicronsPerPixel); // Unchanged!
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_TerminalState_RefusesDifferentResult_AndIdenticalReplayIsIdempotent()
+    {
+        // Q8: calibration already Rejected or Valid refuses a different result; identical replay stays idempotent.
+        var (db, _, service) = CreateSut();
+
+        // 1. Valid calibration
+        var validCal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-q8-1",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(validCal);
+        await db.SaveChangesAsync();
+
+        var validDto = new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ToolVersion = "1.0.0-phase1+test"
+        };
+        await service.ApplyAsync(validCal.CalibrationId, validDto);
+
+        // Idempotent replay with same status -> Success
+        var replayValid = await service.ApplyAsync(validCal.CalibrationId, validDto);
+        Assert.True(replayValid.Success);
+        Assert.Equal("Valid", replayValid.Status);
+
+        // Different status (Rejected) -> Fails
+        var conflictReject = await service.ApplyAsync(validCal.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Rejected",
+            RejectReason = "SOME_REASON"
+        });
+        Assert.False(conflictReject.Success);
+        Assert.Contains("already terminal", conflictReject.ErrorMessage);
+
+        // 2. Rejected calibration
+        var rejectedCal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-q8-2",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(rejectedCal);
+        await db.SaveChangesAsync();
+
+        var rejectDto = new CalibrationResultDto
+        {
+            Status = "Rejected",
+            RejectReason = "UNEVEN_SPACING"
+        };
+        await service.ApplyAsync(rejectedCal.CalibrationId, rejectDto);
+
+        // Idempotent replay with same status -> Success
+        var replayReject = await service.ApplyAsync(rejectedCal.CalibrationId, rejectDto);
+        Assert.True(replayReject.Success);
+        Assert.Equal("Rejected", replayReject.Status);
+
+        // Different status (Valid) -> Fails
+        var conflictValid = await service.ApplyAsync(rejectedCal.CalibrationId, validDto);
+        Assert.False(conflictValid.Success);
+        Assert.Contains("already terminal", conflictValid.ErrorMessage);
     }
 
     [Fact]

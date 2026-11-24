@@ -20,18 +20,15 @@ public class CalibrationController : ControllerBase
     private readonly ILogger<CalibrationController> _logger;
     private readonly PenanciaDbContext _db;
     private readonly IConfiguration _configuration;
-    private readonly Services.ICalibrationResultService? _resultService;
 
     public CalibrationController(
         ILogger<CalibrationController> logger,
         PenanciaDbContext db,
-        IConfiguration configuration,
-        Services.ICalibrationResultService? resultService = null)
+        IConfiguration configuration)
     {
         _logger = logger;
         _db = db;
         _configuration = configuration;
-        _resultService = resultService;
     }
 
     private string CallerObjectId() =>
@@ -317,32 +314,6 @@ public class CalibrationController : ControllerBase
             messageEn = $"Demo calibration: {umPerPx} µm/px ({lines.Value} lines, not physically measured)",
             messageAr = $"معايرة تجريبية: {umPerPx} µm/px ({lines.Value} خطوط، غير مقاسة فعلياً)"
         });
-    }
-
-    /// <summary>
-    /// Applies worker calibration measurement result to calibration record and sample.
-    /// Internal/Staff only.
-    /// </summary>
-    [HttpPost("samples/{sampleId}/calibration/{calibrationId}/result")]
-    [Authorize(Policy = "StaffOnly")]
-    public async Task<IActionResult> ApplyCalibrationResult(string sampleId, Guid calibrationId, [FromBody] Services.CalibrationResultDto result)
-    {
-        if (_resultService == null)
-            return StatusCode(500, new { ok = false, error = "CalibrationResultService not configured." });
-
-        var sample = await _db.Samples.FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
-        if (sample == null)
-            return NotFound(new { ok = false, error = $"Sample {sampleId} not found." });
-
-        var cal = await _db.Calibrations.FirstOrDefaultAsync(c => c.CalibrationId == calibrationId && c.SampleId == sampleId);
-        if (cal == null)
-            return NotFound(new { ok = false, error = $"Calibration {calibrationId} not found for sample {sampleId}." });
-
-        var applyRes = await _resultService.ApplyAsync(calibrationId, result);
-        if (!applyRes.Success)
-            return StatusCode(422, new { ok = false, error = applyRes.ErrorMessage });
-
-        return Ok(new { ok = true, status = applyRes.Status });
     }
 }
 
