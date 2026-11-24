@@ -5,6 +5,7 @@ using Azure.Storage.Sas;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Penancia.S.Api.Application;
 using Penancia.S.Data;
 using Penancia.S.Data.Entities;
 using Penancia.S.Domain.Workflow;
@@ -41,19 +42,22 @@ public class SamplesController : ControllerBase
     private readonly ILogger<SamplesController> _logger;
     private readonly IHttpClientFactory _httpClients;
     private readonly IConfiguration _configuration;
+    private readonly SubmitSampleService _submitService;
 
     public SamplesController(
         PenanciaDbContext db,
         BlobServiceClient blobs,
         IHttpClientFactory httpClients,
         IConfiguration configuration,
-        ILogger<SamplesController> logger)
+        ILogger<SamplesController> logger,
+        SubmitSampleService? submitService = null)
     {
         _db = db;
         _blobs = blobs;
         _httpClients = httpClients;
         _configuration = configuration;
         _logger = logger;
+        _submitService = submitService ?? new SubmitSampleService(db);
     }
 
     private string CallerObjectId() => User.FindFirst("oid")?.Value
@@ -634,103 +638,67 @@ public class SamplesController : ControllerBase
     /// advances to Validating on Submit; Analyzing is reached only from
     /// Validating via FilesValidated, after file validation.
     /// </summary>
-    [HttpPost("{sampleId}/analyze")]
-    [Authorize] // Allow sample owner or staff to trigger analysis
-    public async Task<IActionResult> TriggerAnalysis(string sampleId)
+    /// <summary>
+    /// Submits a sample for asynchronous clinical analysis (Phase 2 Step 2.5, CL-0030).
+    /// Requires Idempotency-Key header. Transitions Draft -> Validating and persists one outbox row atomically.
+    /// </summary>
+    [HttpPost("{sampleId}/submit")]
+    [HttpPost("/v1/semen/samples/{sampleId}/submit")]
+    [Authorize]
+    public async Task<IActionResult> SubmitSample(string sampleId, CancellationToken cancellationToken = default)
     {
-        var sample = await _db.Samples
-            .Include(s => s.Calibration)
-            .FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
-        if (sample == null)
-            return NotFound(new { error = $"Sample {sampleId} not found." });
+        if (!Request.Headers.TryGetValue("Idempotency-Key", out var keyValues) ||
+            string.IsNullOrWhiteSpace(keyValues.FirstOrDefault()))
+        {
+            return BadRequest(new
+            {
+                error = "IDEMPOTENCY_KEY_REQUIRED",
+                message = "Idempotency-Key header is required."
+            });
+        }
 
-        // Verify ownership: only sample creator or staff can trigger analysis
-        var callerId = CallerObjectId();
-        if (sample.CreatedBy != callerId && !IsStaffCaller())
-            return Forbid();
-
-        if (!Enum.TryParse<SampleState>(sample.State, ignoreCase: true, out var current))
-            return StatusCode(422, new { error = $"Sample {sampleId} has an unrecognised stored state '{sample.State}'." });
-
-        if (sample.IsLocked || SampleStateMachine.IsTerminal(current))
-            return StatusCode(409, new { error = $"TERMINAL_STATE: Sample {sampleId} is in state '{current}' and cannot be (re)started." });
-
-        string actorId = callerId;
-        string actorRole = User.IsInRole("ClinicalDirector") ? "ClinicalDirector"
+        string idempotencyKey = keyValues.First()!.Trim();
+        string callerId = CallerObjectId();
+        string callerRole = User.IsInRole("ClinicalDirector") ? "ClinicalDirector"
             : User.IsInRole("Signer") ? "Signer"
-            : User.IsInRole("LabAdmin") ? "LabAdmin" : "Technician";
+            : User.IsInRole("LabAdmin") ? "LabAdmin"
+            : IsStaffCaller() ? "Technician" : "Patient";
 
-        // Readiness strictly reads real stored facts (Step 1.5)
-        var assets = await _db.MediaAssets.Where(a => a.SampleId == sampleId).ToListAsync();
+        var result = await _submitService.SubmitAsync(
+            new SubmitSampleCommand(sampleId, callerId, callerRole, IsStaffCaller(), idempotencyKey),
+            cancellationToken);
 
-        // Quarantine scan-gate (CL-0027/CL-0028): media in quarantine must be Cleared before analysis
-        var quarantineMediaAssets = assets.Where(a =>
-            (string.Equals(a.Kind, "video", StringComparison.OrdinalIgnoreCase) ||
-             string.Equals(a.Kind, "image", StringComparison.OrdinalIgnoreCase)) &&
-            string.Equals(a.Container, "quarantine", StringComparison.OrdinalIgnoreCase)).ToList();
-        if (quarantineMediaAssets.Count > 0 && quarantineMediaAssets.Any(a => !string.Equals(a.Status, "Cleared", StringComparison.OrdinalIgnoreCase)))
+        return result.StatusCode switch
         {
-            return StatusCode(StatusCodes.Status409Conflict, new
+            202 => Accepted($"/v1/semen/samples/{sampleId}/status", new
             {
-                error = "SCAN_PENDING",
-                message = "Media has not passed malware scan."
-            });
-        }
-        var calSnapshot = sample.Calibration != null
-            ? new CalibrationReadinessSnapshot(sample.Calibration.Status, sample.Calibration.ExpiresAtUtc, sample.Calibration.MicronsPerPixel)
-            : null;
-        var assetSnapshots = assets.Select(a => new MediaAssetReadinessSnapshot(a.AssetId, a.Status, a.Kind)).ToList();
-        var sampleSnapshot = new SampleReadinessSnapshot(
-            sample.SampleId,
-            sample.WorkflowMode,
-            sample.ConsentAtUtc,
-            sample.ChamberTypeId,
-            sample.ChamberDepthMicrons,
-            calSnapshot);
+                sampleId = result.SampleId,
+                state = result.State,
+                outboxId = result.OutboxId
+            }),
+            400 => BadRequest(new { error = result.ErrorCode, message = result.Message }),
+            403 => Forbid(),
+            404 => NotFound(new { error = result.ErrorCode, message = result.Message }),
+            409 => Conflict(new { error = result.ErrorCode, message = result.Message }),
+            422 => UnprocessableEntity(new { error = result.ErrorCode, message = result.Message }),
+            _ => StatusCode(result.StatusCode, new { error = result.ErrorCode, message = result.Message })
+        };
+    }
 
-        var readiness = SampleReadiness.Check(sampleSnapshot, assetSnapshots);
-        if (!readiness.IsReady)
+    /// <summary>
+    /// Deprecated direct workflow starter. Retired in favor of POST /v1/semen/samples/{sampleId}/submit (CL-0030).
+    /// </summary>
+    [HttpPost("{sampleId}/analyze")]
+    [Authorize]
+    public IActionResult TriggerAnalysis(string sampleId)
+    {
+        string submitPath = $"/v1/semen/samples/{sampleId}/submit";
+        Response.Headers["Location"] = submitPath;
+        return StatusCode(StatusCodes.Status410Gone, new
         {
-            return StatusCode(422, new
-            {
-                ok = false,
-                error = PrerequisiteReasonCodes.PrerequisitesMissing,
-                missing = readiness.MissingReasons
-            });
-        }
-
-        // Verify state machine can accept Submit event without modifying state in DB.
-        // State remains Draft so Durable Functions orchestrator can execute Submit.
-        var evt = current == SampleState.Validating ? SampleEvent.FilesValidated : SampleEvent.Submit;
-        var ctx = new TransitionContext(actorId, actorRole, Array.Empty<string>(),
-            FilesAndCalibrationPresent: true);
-        var previewResult = SampleStateMachine.Apply(current, evt, ctx);
-        if (!previewResult.Success)
-            return StatusCode(409, new { error = previewResult.FailureReason });
-
-        var workflow = _httpClients.CreateClient("workflow");
-        var functionKey = _configuration["Workflow:FunctionKey"];
-        if (string.IsNullOrWhiteSpace(functionKey))
-            return StatusCode(503, new { error = "WORKFLOW_NOT_CONFIGURED" });
-
-        using var startRequest = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"api/v1/analysis/{Uri.EscapeDataString(sampleId)}/start");
-        startRequest.Headers.Add("x-functions-key", functionKey);
-        using var workflowResponse = await workflow.SendAsync(startRequest);
-        if (!workflowResponse.IsSuccessStatusCode)
-        {
-            _logger.LogError("Workflow starter returned {StatusCode} for sample {SampleId}",
-                (int)workflowResponse.StatusCode, sampleId);
-            return StatusCode(502, new { error = "WORKFLOW_START_FAILED" });
-        }
-
-        _logger.LogInformation("Durable analysis scheduled for sample {SampleId}", sampleId);
-        return Accepted(new
-        {
-            sampleId,
-            status = "WorkflowScheduled",
-            trackingId = sampleId
+            error = "ENDPOINT_DEPRECATED",
+            message = $"This endpoint has been retired. Use POST {submitPath} with an Idempotency-Key header instead.",
+            submitUrl = submitPath
         });
     }
 }

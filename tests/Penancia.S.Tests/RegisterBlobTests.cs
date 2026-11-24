@@ -63,6 +63,7 @@ public class RegisterBlobTests
     {
         var options = new DbContextOptionsBuilder<PenanciaDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .ConfigureWarnings(w => w.Ignore(Microsoft.EntityFrameworkCore.Diagnostics.InMemoryEventId.TransactionIgnoredWarning))
             .Options;
         var db = new PenanciaDbContext(options);
 
@@ -634,44 +635,68 @@ public class RegisterBlobTests
     }
 
     [Fact]
-    public async Task Test18_TriggerAnalysis_QuarantineScanGate_UploadedNotCleared_Returns409ScanPending()
+    public async Task Test18_SubmitSample_QuarantineScanGate_UploadedNotCleared_Returns422NoClearedMedia()
     {
-        var (controller, db, _) = CreateController();
+        var (controller, db, httpContext) = CreateController();
         const string sampleId = "s-scan-gate-pending";
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = sampleId,
+            Status = "Valid",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            MicronsPerPixel = 0.4,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        db.Calibrations.Add(cal);
         await SeedSampleAsync(db, sampleId, state: "Draft");
+        var sample = await db.Samples.FindAsync(sampleId);
+        sample!.CalibrationId = cal.CalibrationId;
+        await db.SaveChangesAsync();
 
         // Seed media asset that is "Uploaded" (has not passed malware scanning)
         await SeedMediaAssetAsync(db, sampleId, kind: "video", status: "Uploaded", sizeBytes: 1024);
 
-        var result = await controller.TriggerAnalysis(sampleId);
+        httpContext.Request.Headers["Idempotency-Key"] = "test18-key";
+        var result = await controller.SubmitSample(sampleId);
 
-        var objResult = Assert.IsType<ObjectResult>(result);
-        Assert.Equal(StatusCodes.Status409Conflict, objResult.StatusCode);
+        var objResult = Assert.IsType<UnprocessableEntityObjectResult>(result);
+        Assert.Equal(StatusCodes.Status422UnprocessableEntity, objResult.StatusCode);
 
         var error = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
-        var message = objResult.Value?.GetType().GetProperty("message")?.GetValue(objResult.Value)?.ToString();
-        Assert.Equal("SCAN_PENDING", error);
-        Assert.Equal("Media has not passed malware scan.", message);
+        Assert.Equal("NO_CLEARED_MEDIA", error);
     }
 
     [Fact]
-    public async Task Test19_TriggerAnalysis_QuarantineScanGate_Cleared_ProceedsPastScanGate()
+    public async Task Test19_SubmitSample_QuarantineScanGate_Cleared_Succeeds202()
     {
-        var (controller, db, _) = CreateController();
+        var (controller, db, httpContext) = CreateController();
         const string sampleId = "s-scan-gate-cleared";
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = sampleId,
+            Status = "Valid",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            MicronsPerPixel = 0.4,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        db.Calibrations.Add(cal);
         await SeedSampleAsync(db, sampleId, state: "Draft");
+        var sample = await db.Samples.FindAsync(sampleId);
+        sample!.CalibrationId = cal.CalibrationId;
+        await db.SaveChangesAsync();
 
         // Seed media asset that is "Cleared"
         await SeedMediaAssetAsync(db, sampleId, kind: "video", status: "Cleared", sizeBytes: 1024);
 
-        var result = await controller.TriggerAnalysis(sampleId);
+        httpContext.Request.Headers["Idempotency-Key"] = "test19-key";
+        var result = await controller.SubmitSample(sampleId);
 
-        // State is Draft and missing prerequisites, so it returns 422 with PREREQUISITES_MISSING (proving it passed the SCAN_PENDING check)
-        var objResult = Assert.IsType<ObjectResult>(result);
-        Assert.Equal(StatusCodes.Status422UnprocessableEntity, objResult.StatusCode);
-        var error = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
-        Assert.NotEqual("SCAN_PENDING", error);
-        Assert.Equal("PREREQUISITES_MISSING", error);
+        var accepted = Assert.IsType<AcceptedResult>(result);
+        Assert.Equal(StatusCodes.Status202Accepted, accepted.StatusCode);
     }
 
     [Fact]
@@ -702,39 +727,69 @@ public class RegisterBlobTests
     }
 
     [Fact]
-    public async Task Test21_TriggerAnalysis_OneClearedAndOneUploadedMediaAsset_Returns409ScanPending_F4()
+    public async Task Test21_SubmitSample_OneClearedAndOneUploadedMediaAsset_Returns422ScanPending_F4()
     {
-        // F4: Kills Any -> All mutant in quarantine scan-gate
-        var (controller, db, _) = CreateController();
+        // F4: Kills Any -> All mutant in quarantine scan-gate on SubmitSample
+        var (controller, db, httpContext) = CreateController();
         const string sampleId = "s-scan-gate-any-vs-all";
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = sampleId,
+            Status = "Valid",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            MicronsPerPixel = 0.4,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        db.Calibrations.Add(cal);
         await SeedSampleAsync(db, sampleId, state: "Draft");
+        var sample = await db.Samples.FindAsync(sampleId);
+        sample!.CalibrationId = cal.CalibrationId;
+        await db.SaveChangesAsync();
 
         await SeedMediaAssetAsync(db, sampleId, kind: "video", status: "Cleared", sizeBytes: 2048);
         await SeedMediaAssetAsync(db, sampleId, kind: "image", status: "Uploaded", sizeBytes: 1024);
 
-        var result = await controller.TriggerAnalysis(sampleId);
+        httpContext.Request.Headers["Idempotency-Key"] = "test21-key";
+        var result = await controller.SubmitSample(sampleId);
 
-        var objResult = Assert.IsType<ObjectResult>(result);
-        Assert.Equal(StatusCodes.Status409Conflict, objResult.StatusCode);
+        var objResult = Assert.IsType<UnprocessableEntityObjectResult>(result);
+        Assert.Equal(StatusCodes.Status422UnprocessableEntity, objResult.StatusCode);
         var error = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
         Assert.Equal("SCAN_PENDING", error);
     }
 
     [Fact]
-    public async Task Test22_TriggerAnalysis_QuarantineAssetWithVerifiedStatus_Returns409ScanPending_F5()
+    public async Task Test22_SubmitSample_QuarantineAssetWithVerifiedStatus_Returns422NoClearedMedia_F5()
     {
         // F5: Verified is removed from the quarantine scan-gate
-        var (controller, db, _) = CreateController();
+        var (controller, db, httpContext) = CreateController();
         const string sampleId = "s-scan-gate-no-verified";
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = sampleId,
+            Status = "Valid",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            MicronsPerPixel = 0.4,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        db.Calibrations.Add(cal);
         await SeedSampleAsync(db, sampleId, state: "Draft");
+        var sample = await db.Samples.FindAsync(sampleId);
+        sample!.CalibrationId = cal.CalibrationId;
+        await db.SaveChangesAsync();
 
         await SeedMediaAssetAsync(db, sampleId, kind: "video", status: "Verified", sizeBytes: 2048);
 
-        var result = await controller.TriggerAnalysis(sampleId);
+        httpContext.Request.Headers["Idempotency-Key"] = "test22-key";
+        var result = await controller.SubmitSample(sampleId);
 
-        var objResult = Assert.IsType<ObjectResult>(result);
-        Assert.Equal(StatusCodes.Status409Conflict, objResult.StatusCode);
+        var objResult = Assert.IsType<UnprocessableEntityObjectResult>(result);
+        Assert.Equal(StatusCodes.Status422UnprocessableEntity, objResult.StatusCode);
         var error = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
-        Assert.Equal("SCAN_PENDING", error);
+        Assert.Equal("NO_CLEARED_MEDIA", error);
     }
 }

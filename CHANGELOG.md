@@ -1342,6 +1342,41 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0030 — Phase 2 Step 2.5 Wiring (Lane C): POST /submit Endpoint and Retirement of /analyze (410 Gone)
+
+- **Date (UTC):** 2026-11-24T19:37:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / Step 2.5 Wiring (Lane C)
+- **Issue IDs:** ISS-015, ISS-016
+- **Type:** Added & Deprecated
+- **Prior Commit Record:** Merged `phase-2/fix-scan-wiring` (`1211a0c`, CL-0028) and `phase-2/submit-core` (`fc2bb7b`, CL-0029) into `phase-2/upload-and-submit` (`f869b62`).
+- **Summary:**
+  1. **Submit Endpoint (`SamplesController.SubmitSample`):**
+     - Added `POST /v1/semen/samples/{sampleId}/submit` (and `/v1/samples/{sampleId}/submit`).
+     - Enforces `Idempotency-Key` header (`400 IDEMPOTENCY_KEY_REQUIRED` if missing/blank).
+     - Delegates to `SubmitSampleService` (registered in DI in `Program.cs`) and maps results: `202 Accepted` `{ sampleId, state, outboxId }`, `403 Forbid`, `404 NotFound`, `409 Conflict`, `422 UnprocessableEntity`.
+     - Quarantine scan gate enforced on the new route (`SCAN_PENDING` / `NO_CLEARED_MEDIA`).
+  2. **Retired `POST /{sampleId}/analyze` (`SamplesController.TriggerAnalysis`):**
+     - Returns `410 Gone` (`ENDPOINT_DEPRECATED`) with `Location: /v1/semen/samples/{sampleId}/submit` header and `submitUrl` pointer in the body.
+- **Files changed:**
+  - `src/Penancia.S.Api/Program.cs` — registered `SubmitSampleService`.
+  - `src/Penancia.S.Api/Controllers/V1/SamplesController.cs` — added `SubmitSample`, retired `TriggerAnalysis` to 410 Gone.
+  - `tests/Penancia.S.Tests/SubmitSampleControllerTests.cs` — new controller tests for 400/202/403/409/422 and 410 Gone.
+  - `tests/Penancia.S.Tests/RegisterBlobTests.cs` — updated `Test18`, `Test19`, `Test21`, `Test22` to exercise the scan gate on `SubmitSample`.
+  - `tests/Penancia.S.Tests/SampleReadinessTests.cs` — updated retired `TriggerAnalysis` tests to assert 410 Gone.
+  - `CHANGELOG.md` — appended CL-0030 entry.
+- **Tests run & Mutation Results:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 365 passed, 1 skipped, 0 failed.
+  - `cd frontend && bun test` → 31 passed, 0 failed.
+  - `bicep build infra/main.bicep` → 0 errors, 5 warnings.
+  - `bash tools/check_role_ids.sh` → PASS (7/7 allowed).
+  - `bash tools/check_queue_wiring.sh` & `bash tools/check_queue_wiring.test.sh` → PASS (4/4 tests passed).
+  - `bash tools/check_changelog.test.sh` → PASS (4/4 tests passed).
+  - Mutation testing (3/3 CAUGHT): `C-MissingHeader`, `C-Analyze410`, `C-ScanGateOnSubmit`.
+- **Commit(s):** pending (branch `phase-2/upload-and-submit`)
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did

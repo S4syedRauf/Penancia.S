@@ -91,6 +91,7 @@ builder.Services.AddAuthorization(options =>
 
 builder.Services.AddControllers();
 builder.Services.AddScoped<Penancia.S.Api.Services.ICalibrationResultService, Penancia.S.Api.Services.CalibrationResultService>();
+builder.Services.AddScoped<Penancia.S.Api.Application.SubmitSampleService>();
 builder.Services.AddHttpClient("workflow", client =>
 {
     client.BaseAddress = new Uri(builder.Configuration["Workflow:BaseUrl"]

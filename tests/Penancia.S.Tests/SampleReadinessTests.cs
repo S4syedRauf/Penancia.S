@@ -379,186 +379,15 @@ public class SampleReadinessTests
     }
 
     [Fact]
-    public async Task TriggerAnalysis_PrerequisitesMissing_Returns422_WithMissingReasonList()
+    public void TriggerAnalysis_Returns410Gone_PointingToSubmitRoute()
     {
-        var (db, controller, _) = CreateSamplesController(userId: "owner-1");
-        var sample = new SampleEntity
-        {
-            SampleId = "sample-missing-pre",
-            CreatedBy = "owner-1",
-            State = "Draft",
-            WorkflowMode = "prescreen",
-            ConsentAtUtc = null
-        };
-        db.Samples.Add(sample);
-        await db.SaveChangesAsync();
+        var (_, controller, handler) = CreateSamplesController(userId: "owner-1");
 
-        var result = await controller.TriggerAnalysis(sample.SampleId) as ObjectResult;
+        var result = controller.TriggerAnalysis("sample-retired") as ObjectResult;
         Assert.NotNull(result);
-        Assert.Equal(422, result.StatusCode);
-    }
-
-    [Fact]
-    public async Task TriggerAnalysis_LeavesStateAsDraft_AndCallsWorkflow()
-    {
-        var (db, controller, handler) = CreateSamplesController(
-            userId: "owner-2",
-            workflowStatusCode: HttpStatusCode.Accepted);
-
-        var cal = new CalibrationEntity
-        {
-            CalibrationId = Guid.NewGuid(),
-            SampleId = "sample-ready-2",
-            Status = "Valid",
-            MicronsPerPixel = 0.4000,
-            MeasuredPitchPx = 25.0,
-            TargetId = "thorlabs-r1l3s2p",
-            ReferencePitchUm = 10.0,
-            CreatedAtUtc = DateTime.UtcNow,
-            ExpiresAtUtc = DateTime.UtcNow.AddDays(7)
-        };
-        db.Calibrations.Add(cal);
-
-        var sample = new SampleEntity
-        {
-            SampleId = "sample-ready-2",
-            CreatedBy = "owner-2",
-            State = "Draft",
-            WorkflowMode = "prescreen",
-            ConsentAtUtc = DateTime.UtcNow.AddHours(-1),
-            CalibrationId = cal.CalibrationId,
-            MicronsPerPixel = null
-        };
-        db.Samples.Add(sample);
-
-        var asset = new MediaAssetEntity
-        {
-            AssetId = Guid.NewGuid(),
-            SampleId = sample.SampleId,
-            Kind = "video",
-            Container = "raw-videos",
-            BlobName = "video.mp4",
-            ContentTypeDeclared = "video/mp4",
-            SizeBytes = 4096,
-            Status = "Verified"
-        };
-        db.MediaAssets.Add(asset);
-        await db.SaveChangesAsync();
-
-        var result = await controller.TriggerAnalysis(sample.SampleId) as AcceptedResult;
-        Assert.NotNull(result);
-        Assert.Equal(202, result.StatusCode);
-
-        // Verify state remains Draft (not changed to Validating)
-        var freshSample = await db.Samples.FirstAsync(s => s.SampleId == sample.SampleId);
-        Assert.Equal("Draft", freshSample.State);
-
-        // Verify workflow HTTP endpoint was called
-        Assert.NotNull(handler.LastRequest);
-        Assert.Equal(HttpMethod.Post, handler.LastRequest.Method);
-        Assert.Contains(sample.SampleId, handler.LastRequest.RequestUri?.ToString());
-    }
-
-    [Fact]
-    public async Task TriggerAnalysis_Returns503_WhenWorkflowNotConfigured()
-    {
-        var (db, controller, _) = CreateSamplesController(
-            userId: "owner-503",
-            functionKey: null); // Missing function key
-
-        var cal = new CalibrationEntity
-        {
-            CalibrationId = Guid.NewGuid(),
-            SampleId = "sample-ready-503",
-            Status = "Valid",
-            MicronsPerPixel = 0.4000,
-            MeasuredPitchPx = 25.0,
-            TargetId = "thorlabs-r1l3s2p",
-            ReferencePitchUm = 10.0,
-            CreatedAtUtc = DateTime.UtcNow,
-            ExpiresAtUtc = DateTime.UtcNow.AddDays(7)
-        };
-        db.Calibrations.Add(cal);
-
-        var sample = new SampleEntity
-        {
-            SampleId = "sample-ready-503",
-            CreatedBy = "owner-503",
-            State = "Draft",
-            WorkflowMode = "prescreen",
-            ConsentAtUtc = DateTime.UtcNow.AddHours(-1),
-            CalibrationId = cal.CalibrationId
-        };
-        db.Samples.Add(sample);
-
-        var asset = new MediaAssetEntity
-        {
-            AssetId = Guid.NewGuid(),
-            SampleId = sample.SampleId,
-            Kind = "video",
-            Container = "raw-videos",
-            BlobName = "video.mp4",
-            ContentTypeDeclared = "video/mp4",
-            SizeBytes = 4096,
-            Status = "Verified"
-        };
-        db.MediaAssets.Add(asset);
-        await db.SaveChangesAsync();
-
-        var result = await controller.TriggerAnalysis(sample.SampleId) as ObjectResult;
-        Assert.NotNull(result);
-        Assert.Equal(503, result.StatusCode);
-    }
-
-    [Fact]
-    public async Task TriggerAnalysis_Returns502_WhenWorkflowStartFails()
-    {
-        var (db, controller, _) = CreateSamplesController(
-            userId: "owner-502",
-            workflowStatusCode: HttpStatusCode.InternalServerError); // Upstream error
-
-        var cal = new CalibrationEntity
-        {
-            CalibrationId = Guid.NewGuid(),
-            SampleId = "sample-ready-502",
-            Status = "Valid",
-            MicronsPerPixel = 0.4000,
-            MeasuredPitchPx = 25.0,
-            TargetId = "thorlabs-r1l3s2p",
-            ReferencePitchUm = 10.0,
-            CreatedAtUtc = DateTime.UtcNow,
-            ExpiresAtUtc = DateTime.UtcNow.AddDays(7)
-        };
-        db.Calibrations.Add(cal);
-
-        var sample = new SampleEntity
-        {
-            SampleId = "sample-ready-502",
-            CreatedBy = "owner-502",
-            State = "Draft",
-            WorkflowMode = "prescreen",
-            ConsentAtUtc = DateTime.UtcNow.AddHours(-1),
-            CalibrationId = cal.CalibrationId
-        };
-        db.Samples.Add(sample);
-
-        var asset = new MediaAssetEntity
-        {
-            AssetId = Guid.NewGuid(),
-            SampleId = sample.SampleId,
-            Kind = "video",
-            Container = "raw-videos",
-            BlobName = "video.mp4",
-            ContentTypeDeclared = "video/mp4",
-            SizeBytes = 4096,
-            Status = "Verified"
-        };
-        db.MediaAssets.Add(asset);
-        await db.SaveChangesAsync();
-
-        var result = await controller.TriggerAnalysis(sample.SampleId) as ObjectResult;
-        Assert.NotNull(result);
-        Assert.Equal(502, result.StatusCode);
+        Assert.Equal(410, result.StatusCode);
+        Assert.Equal("/v1/semen/samples/sample-retired/submit", controller.HttpContext.Response.Headers["Location"].ToString());
+        Assert.Null(handler.LastRequest);
     }
 
     [Fact]
@@ -579,27 +408,12 @@ public class SampleReadinessTests
     }
 
     [Fact]
-    public async Task TriggerAnalysis_WhenPrerequisitesMissing_Returns422_AndNeverCallsWorkflow()
+    public void TriggerAnalysis_Deprecated_NeverCallsWorkflow()
     {
-        // V1: TriggerAnalysis returns 422 with reason list when readiness fails and does not call workflow starter.
-        var (db, controller, handler) = CreateSamplesController();
-        string sampleId = "sample-v1-unready";
-        var sample = new SampleEntity
-        {
-            SampleId = sampleId,
-            CreatedBy = "user-123",
-            State = "Draft",
-            WorkflowMode = "prescreen",
-            ConsentAtUtc = null // Missing consent -> unready
-        };
-        db.Samples.Add(sample);
-        await db.SaveChangesAsync();
-
-        var actionResult = await controller.TriggerAnalysis(sampleId);
+        var (_, controller, handler) = CreateSamplesController();
+        var actionResult = controller.TriggerAnalysis("sample-v1-unready");
         var objectResult = Assert.IsType<ObjectResult>(actionResult);
-        Assert.Equal(422, objectResult.StatusCode);
-
-        // Assert workflow HTTP client was NEVER invoked
+        Assert.Equal(410, objectResult.StatusCode);
         Assert.Null(handler.LastRequest);
     }
 
