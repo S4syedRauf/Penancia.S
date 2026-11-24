@@ -46,5 +46,14 @@ public class MediaAssetEntity
     public string? Codec { get; set; }
 
     public double? DurationS { get; set; }
+
+    [MaxLength(32)]
+    public string? ScanVerdict { get; set; }
+
+    [MaxLength(1024)]
+    public string? MalwareNamesFound { get; set; }
+
+    public DateTime? ScannedAtUtc { get; set; }
+
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }

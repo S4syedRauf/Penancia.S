@@ -1,9 +1,11 @@
+using System.Text.Json.Serialization;
 using Azure.Storage;
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Penancia.S.Api.Application;
 using Penancia.S.Data;
 using Penancia.S.Data.Entities;
 using Penancia.S.Domain.Workflow;
@@ -40,19 +42,22 @@ public class SamplesController : ControllerBase
     private readonly ILogger<SamplesController> _logger;
     private readonly IHttpClientFactory _httpClients;
     private readonly IConfiguration _configuration;
+    private readonly SubmitSampleService _submitService;
 
     public SamplesController(
         PenanciaDbContext db,
         BlobServiceClient blobs,
         IHttpClientFactory httpClients,
         IConfiguration configuration,
-        ILogger<SamplesController> logger)
+        ILogger<SamplesController> logger,
+        SubmitSampleService? submitService = null)
     {
         _db = db;
         _blobs = blobs;
         _httpClients = httpClients;
         _configuration = configuration;
         _logger = logger;
+        _submitService = submitService ?? new SubmitSampleService(db);
     }
 
     private string CallerObjectId() => User.FindFirst("oid")?.Value
@@ -199,20 +204,51 @@ public class SamplesController : ControllerBase
         });
     }
 
+    private static readonly HashSet<string> AllowedUploadKinds = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "video",
+        "image",
+        "calibration"
+    };
+
+    private static readonly Dictionary<string, string> AllowedContentTypeExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["video/mp4"] = ".mp4",
+        ["video/quicktime"] = ".mov",
+        ["video/webm"] = ".webm",
+        ["image/jpeg"] = ".jpg",
+        ["image/png"] = ".png",
+        ["image/heic"] = ".heic"
+    };
+
+    private static readonly HashSet<string> VideoContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "video/mp4",
+        "video/quicktime",
+        "video/webm"
+    };
+
+    private static readonly HashSet<string> ImageContentTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "image/jpeg",
+        "image/png",
+        "image/heic"
+    };
+
     /// <summary>
     /// Generates a real short-lived user-delegation SAS token for direct
-    /// browser/mobile upload to Azure Blob Storage (#6). Write + Create
-    /// only, expiry now + 15 minutes. Video uploads go to 'raw-video' as
-    /// .mp4; image uploads go to 'raw-images' with the extension derived
-    /// from the supplied file name (or content type); when neither is
-    /// supplied the image default is .jpg.
+    /// browser/mobile upload to the Azure Blob Storage quarantine container (ISS-016).
+    /// Permissions: Write + Create only ('cw'), single blob, expiry 60 minutes, HTTPS only.
+    /// Kinds: video, image, calibration.
+    /// Content types: video/mp4, video/quicktime, video/webm, image/jpeg, image/png, image/heic.
     /// </summary>
     [HttpGet("{sampleId}/upload-sas")]
     [HttpPost("{sampleId}/upload-sas")]
     [Authorize] // Allow any authenticated user (patients can upload their own samples)
     public async Task<IActionResult> GenerateUploadSas(
         string sampleId,
-        [FromQuery] string fileType = "video",
+        [FromQuery] string? fileType = null,
+        [FromQuery] string? kind = null,
         [FromQuery] string? fileName = null,
         [FromQuery] string? contentType = null)
     {
@@ -220,70 +256,219 @@ public class SamplesController : ControllerBase
             .Include(s => s.Calibration)
             .FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
         if (sample == null)
-            return NotFound(new { error = $"Sample {sampleId} not found." });
+            return NotFound(new { error = "SAMPLE_NOT_FOUND", message = $"Sample {sampleId} not found." });
 
-        if (sample.CreatedBy != CallerObjectId() && !IsStaffCaller()) return Forbid();
+        if (sample.CreatedBy != CallerObjectId() && !IsStaffCaller())
+            return Forbid();
 
-        bool isVideo = string.Equals(fileType, "video", StringComparison.OrdinalIgnoreCase);
-        string container = isVideo ? "raw-video" : "raw-images";
-        string extension = isVideo ? ".mp4" : ResolveImageExtension(fileName, contentType);
-        string blobName = $"{sampleId}_{Guid.NewGuid():N}{extension}";
-
-        string sasUri = await BuildUserDelegationSasUriAsync(container, blobName);
-
-        return Ok(new
+        string? effectiveKind = !string.IsNullOrWhiteSpace(kind) ? kind.Trim() : (!string.IsNullOrWhiteSpace(fileType) ? fileType.Trim() : null);
+        if (string.IsNullOrWhiteSpace(effectiveKind) || !AllowedUploadKinds.Contains(effectiveKind))
         {
-            sasUrl = sasUri,
-            targetBlobUri = sasUri,
-            expiresInMinutes = 15,
-            container = container,
-            blobName = blobName
+            return BadRequest(new
+            {
+                error = "INVALID_MEDIA_KIND",
+                message = $"Invalid media kind '{effectiveKind}'. Allowed kinds: video, image, calibration."
+            });
+        }
+
+        if (string.IsNullOrWhiteSpace(contentType) || !AllowedContentTypeExtensions.ContainsKey(contentType.Trim()))
+        {
+            return BadRequest(new
+            {
+                error = "INVALID_CONTENT_TYPE",
+                message = $"Invalid or missing content type '{contentType}'. Allowed content types: video/mp4, video/quicktime, video/webm, image/jpeg, image/png, image/heic."
+            });
+        }
+
+        string normalizedKind = effectiveKind.ToLowerInvariant();
+        string normalizedContentType = contentType.Trim().ToLowerInvariant();
+
+        if (normalizedKind == "video" && !VideoContentTypes.Contains(normalizedContentType))
+        {
+            return BadRequest(new
+            {
+                error = "INVALID_CONTENT_TYPE",
+                message = $"Content type '{contentType}' is not valid for media kind 'video'."
+            });
+        }
+
+        if ((normalizedKind == "image" || normalizedKind == "calibration") && !ImageContentTypes.Contains(normalizedContentType))
+        {
+            return BadRequest(new
+            {
+                error = "INVALID_CONTENT_TYPE",
+                message = $"Content type '{contentType}' is not valid for media kind '{normalizedKind}'."
+            });
+        }
+
+        // Rate limit: 10 SAS per sample per hour via DB count of all assets for this sample in last hour (D2)
+        var oneHourAgo = DateTime.UtcNow.AddHours(-1);
+        int assetsInLastHour = await _db.MediaAssets
+            .CountAsync(m => m.SampleId == sampleId && m.CreatedAtUtc >= oneHourAgo);
+
+        if (assetsInLastHour >= 10)
+        {
+            Response.Headers["Retry-After"] = "3600";
+            return StatusCode(StatusCodes.Status429TooManyRequests, new
+            {
+                error = "RATE_LIMIT_EXCEEDED",
+                message = "Rate limit of 10 upload SAS requests per sample per hour exceeded.",
+                retryAfterSeconds = 3600
+            });
+        }
+
+        // Configuration-driven per-kind maxBytes with safe defaults
+        long maxBytes = normalizedKind switch
+        {
+            "video" => _configuration.GetValue<long?>("MediaUpload:MaxBytes:Video") ?? 524_288_000L,       // 500 MB
+            "image" => _configuration.GetValue<long?>("MediaUpload:MaxBytes:Image") ?? 26_214_400L,         // 25 MB
+            "calibration" => _configuration.GetValue<long?>("MediaUpload:MaxBytes:Calibration") ?? 26_214_400L, // 25 MB
+            _ => 26_214_400L
+        };
+        long blockSizeBytes = _configuration.GetValue<long?>("MediaUpload:BlockSizeBytes") ?? 4_194_304L; // 4 MB
+
+        var assetId = Guid.NewGuid();
+        string extension = AllowedContentTypeExtensions[normalizedContentType];
+        string blobName = $"{sampleId}/{assetId}{extension}";
+        const string container = "quarantine";
+
+        var startsOn = DateTimeOffset.UtcNow.AddMinutes(-5);
+        var expiresOn = DateTimeOffset.UtcNow.AddMinutes(60);
+
+        string uploadUrl;
+        try
+        {
+            uploadUrl = await BuildUserDelegationSasUriAsync(container, blobName, startsOn, expiresOn);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to generate user delegation SAS URI for sample {SampleId}, asset {AssetId}", sampleId, assetId);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                error = "STORAGE_UNAVAILABLE",
+                message = "Storage service unavailable."
+            });
+        }
+
+        var asset = new MediaAssetEntity
+        {
+            AssetId = assetId,
+            SampleId = sampleId,
+            Kind = normalizedKind,
+            Container = container,
+            BlobName = blobName,
+            ContentTypeDeclared = normalizedContentType,
+            SizeBytes = 0,
+            Status = "Issued",
+            CreatedAtUtc = DateTime.UtcNow
+        };
+        _db.MediaAssets.Add(asset);
+        await _db.SaveChangesAsync();
+
+        _logger.LogInformation("Issued upload SAS for asset {AssetId} (sample {SampleId}, kind {Kind}, ext {Extension})",
+            assetId, sampleId, normalizedKind, extension);
+
+        return Ok(new UploadSasResponseDto
+        {
+            AssetId = assetId,
+            UploadUrl = uploadUrl,
+            ExpiresAtUtc = expiresOn.UtcDateTime,
+            MaxBytes = maxBytes,
+            BlockSizeBytes = blockSizeBytes,
+#pragma warning disable CS0618
+            SasUrl = uploadUrl,
+            TargetBlobUri = uploadUrl,
+#pragma warning restore CS0618
+            Container = container,
+            BlobName = blobName
         });
     }
 
-    private static string ResolveImageExtension(string? fileName, string? contentType)
+    protected virtual BlobSasBuilder CreateBlobSasBuilder(
+        string container,
+        string blobName,
+        DateTimeOffset startsOn,
+        DateTimeOffset expiresOn)
     {
-        if (!string.IsNullOrWhiteSpace(fileName))
-        {
-            string ext = Path.GetExtension(fileName).ToLowerInvariant();
-            if (!string.IsNullOrWhiteSpace(ext))
-                return ext;
-        }
-        return (contentType ?? string.Empty).ToLowerInvariant() switch
-        {
-            "image/png" => ".png",
-            "image/webp" => ".webp",
-            "image/heic" => ".heic",
-            "image/heif" => ".heif",
-            "image/jpeg" => ".jpg",
-            _ => ".jpg" // container-appropriate default for raw-images when nothing is supplied
-        };
-    }
-
-    private async Task<string> BuildUserDelegationSasUriAsync(string container, string blobName)
-    {
-        var blobClient = _blobs.GetBlobContainerClient(container).GetBlobClient(blobName);
-        var startsOn = DateTimeOffset.UtcNow.AddMinutes(-5);
-        var expiresOn = DateTimeOffset.UtcNow.AddMinutes(15);
-        var delegationKey = await _blobs.GetUserDelegationKeyAsync(startsOn, expiresOn);
         var sas = new BlobSasBuilder
         {
             BlobContainerName = container,
             BlobName = blobName,
             Resource = "b",
             StartsOn = startsOn,
-            ExpiresOn = expiresOn
+            ExpiresOn = expiresOn,
+            Protocol = SasProtocol.Https
         };
-        sas.SetPermissions(BlobSasPermissions.Write | BlobSasPermissions.Create);
+        sas.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
+        return sas;
+    }
+
+    protected virtual async Task<string> BuildUserDelegationSasUriAsync(
+        string container,
+        string blobName,
+        DateTimeOffset startsOn,
+        DateTimeOffset expiresOn)
+    {
+        if (_blobs == null)
+        {
+            throw new InvalidOperationException("BlobServiceClient is not configured.");
+        }
+
+        var sas = CreateBlobSasBuilder(container, blobName, startsOn, expiresOn);
+
+        var delegationKey = await _blobs.GetUserDelegationKeyAsync(startsOn, expiresOn);
+        var sasParams = sas.ToSasQueryParameters(delegationKey, _blobs.AccountName);
+        var blobClient = _blobs.GetBlobContainerClient(container).GetBlobClient(blobName);
         return new BlobUriBuilder(blobClient.Uri)
         {
-            Sas = sas.ToSasQueryParameters(delegationKey, _blobs.AccountName)
+            Sas = sasParams
         }.ToUri().ToString();
     }
 
+    protected virtual async Task<BlobPropertiesDto> GetBlobPropertiesAsync(string container, string blobName)
+    {
+        if (_blobs == null)
+        {
+            throw new InvalidOperationException("BlobServiceClient is not configured.");
+        }
+
+        var containerClient = _blobs.GetBlobContainerClient(container);
+        var blobClient = containerClient.GetBlobClient(blobName);
+
+        var exists = await blobClient.ExistsAsync();
+        if (!exists.Value)
+        {
+            return new BlobPropertiesDto { Exists = false, ContentLength = 0 };
+        }
+
+        var properties = await blobClient.GetPropertiesAsync();
+        return new BlobPropertiesDto
+        {
+            Exists = true,
+            ContentLength = properties.Value.ContentLength,
+            ContentType = properties.Value.ContentType
+        };
+    }
+
+    protected virtual async Task DeleteBlobIfExistsAsync(string container, string blobName)
+    {
+        if (_blobs == null)
+        {
+            throw new InvalidOperationException("BlobServiceClient is not configured.");
+        }
+
+        var containerClient = _blobs.GetBlobContainerClient(container);
+        var blobClient = containerClient.GetBlobClient(blobName);
+        await blobClient.DeleteIfExistsAsync();
+    }
+
     /// <summary>
-    /// Registers a blob URI with the sample after direct upload to Azure Blob Storage.
-    /// Called by the client after successfully uploading a file using the SAS URL.
+    /// Registers a blob with the sample by server-verifying the uploaded media asset (ISS-015).
+    /// Accepts { assetId } only. If an old client sends blobUri, it is ignored and never stored,
+    /// returning a deprecation header.
+    /// Reads blob properties directly from Azure Blob Storage via managed identity (no keys),
+    /// validates existence, size <= maxBytes, name prefix matching "{sampleId}/",
+    /// and transitions Status to "Uploaded" with real ContentLength.
     /// </summary>
     [HttpPost("{sampleId}/register-blob")]
     [Authorize]
@@ -293,28 +478,149 @@ public class SamplesController : ControllerBase
             .Include(s => s.Calibration)
             .FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
         if (sample == null)
-            return NotFound(new { error = $"Sample {sampleId} not found." });
+            return NotFound(new { error = "SAMPLE_NOT_FOUND", message = $"Sample {sampleId} not found." });
 
         var callerId = CallerObjectId();
         if (sample.CreatedBy != callerId && !IsStaffCaller())
             return Forbid();
 
-        if (string.Equals(request.MediaType, "video", StringComparison.OrdinalIgnoreCase))
+        var asset = await _db.MediaAssets.FirstOrDefaultAsync(m => m.AssetId == request.AssetId);
+        if (asset == null)
         {
-            sample.RawVideoBlobUri = request.BlobUri;
+            return NotFound(new { error = "ASSET_NOT_FOUND", message = $"Asset {request.AssetId} not found." });
         }
-        else if (string.Equals(request.MediaType, "image", StringComparison.OrdinalIgnoreCase))
+
+        if (asset.SampleId != sampleId)
         {
-            sample.RawImageBlobUri = request.BlobUri;
+            return Forbid();
         }
-        else
+
+        if (string.Equals(asset.Status, "Uploaded", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(asset.Status, "Cleared", StringComparison.OrdinalIgnoreCase))
         {
-            return BadRequest(new { error = "Invalid mediaType. Must be 'video' or 'image'." });
+            return Ok(new
+            {
+                success = true,
+                assetId = asset.AssetId,
+                status = asset.Status,
+                sizeBytes = asset.SizeBytes,
+                sampleId = asset.SampleId
+            });
+        }
+
+        if (asset.Status == "Rejected")
+        {
+            return Conflict(new
+            {
+                error = "ASSET_REJECTED",
+                message = $"Asset {request.AssetId} was rejected: {asset.RejectReason}"
+            });
+        }
+
+        if (!asset.BlobName.StartsWith($"{sampleId}/", StringComparison.Ordinal))
+        {
+            return Conflict(new
+            {
+                error = "BLOB_PREFIX_MISMATCH",
+                message = "Blob name prefix does not match sample."
+            });
+        }
+
+        BlobPropertiesDto blobProps;
+        try
+        {
+            blobProps = await GetBlobPropertiesAsync(asset.Container, asset.BlobName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to inspect blob properties for container {Container}, blob {BlobName}", asset.Container, asset.BlobName);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                error = "STORAGE_UNAVAILABLE",
+                message = "Storage service unavailable."
+            });
+        }
+
+        if (!blobProps.Exists)
+        {
+            return Conflict(new
+            {
+                error = "BLOB_NOT_UPLOADED",
+                message = "Blob has not been uploaded to storage."
+            });
+        }
+
+        if (blobProps.ContentLength <= 0)
+        {
+            return Conflict(new
+            {
+                error = "ZERO_LENGTH_BLOB",
+                message = "Blob content length is zero."
+            });
+        }
+
+        long maxBytes = asset.Kind.ToLowerInvariant() switch
+        {
+            "video" => _configuration.GetValue<long>("MediaUpload:MaxBytes:video", 524288000),
+            "image" => _configuration.GetValue<long>("MediaUpload:MaxBytes:image", 26214400),
+            "calibration" => _configuration.GetValue<long>("MediaUpload:MaxBytes:calibration", 26214400),
+            _ => 26214400
+        };
+
+        if (blobProps.ContentLength > maxBytes)
+        {
+            asset.Status = "Rejected";
+            asset.RejectReason = $"Blob size {blobProps.ContentLength} exceeds maximum allowed {maxBytes} bytes.";
+            await _db.SaveChangesAsync();
+
+            try
+            {
+                await DeleteBlobIfExistsAsync(asset.Container, asset.BlobName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to delete oversized blob {BlobName} in container {Container}", asset.BlobName, asset.Container);
+            }
+
+            return StatusCode(StatusCodes.Status413PayloadTooLarge, new
+            {
+                error = "PAYLOAD_TOO_LARGE",
+                message = $"Blob size {blobProps.ContentLength} exceeds maximum allowed {maxBytes} bytes."
+            });
+        }
+
+        asset.Status = "Uploaded";
+        asset.SizeBytes = blobProps.ContentLength;
+
+        // Derive canonical blob URI strictly from verified database row
+        string accountName = _blobs!.AccountName;
+        string canonicalUri = $"https://{accountName}.blob.core.windows.net/{asset.Container}/{asset.BlobName}";
+        if (string.Equals(asset.Kind, "video", StringComparison.OrdinalIgnoreCase))
+        {
+            sample.RawVideoBlobUri = canonicalUri;
+        }
+        else if (string.Equals(asset.Kind, "image", StringComparison.OrdinalIgnoreCase))
+        {
+            sample.RawImageBlobUri = canonicalUri;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.BlobUri))
+        {
+            Response.Headers["Deprecation"] = "true";
+            Response.Headers["X-Deprecated-Field"] = "blobUri";
         }
 
         await _db.SaveChangesAsync();
-        _logger.LogInformation("Registered {MediaType} blob for sample {SampleId}: {BlobUri}", request.MediaType, sampleId, request.BlobUri);
-        return Ok(new { success = true, sampleId, mediaType = request.MediaType, blobUri = request.BlobUri });
+        _logger.LogInformation("Verified and registered media asset {AssetId} for sample {SampleId} ({SizeBytes} bytes)", asset.AssetId, sampleId, asset.SizeBytes);
+
+        return Ok(new
+        {
+            success = true,
+            assetId = asset.AssetId,
+            status = asset.Status,
+            sizeBytes = asset.SizeBytes,
+            sampleId = asset.SampleId
+        });
     }
 
     /// <summary>
@@ -332,94 +638,101 @@ public class SamplesController : ControllerBase
     /// advances to Validating on Submit; Analyzing is reached only from
     /// Validating via FilesValidated, after file validation.
     /// </summary>
-    [HttpPost("{sampleId}/analyze")]
-    [Authorize] // Allow sample owner or staff to trigger analysis
-    public async Task<IActionResult> TriggerAnalysis(string sampleId)
+    /// <summary>
+    /// Submits a sample for asynchronous clinical analysis (Phase 2 Step 2.5, CL-0030).
+    /// Requires Idempotency-Key header. Transitions Draft -> Validating and persists one outbox row atomically.
+    /// </summary>
+    [HttpPost("{sampleId}/submit")]
+    [HttpPost("/v1/semen/samples/{sampleId}/submit")]
+    [Authorize]
+    public async Task<IActionResult> SubmitSample(string sampleId, CancellationToken cancellationToken = default)
     {
-        var sample = await _db.Samples
-            .Include(s => s.Calibration)
-            .FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
-        if (sample == null)
-            return NotFound(new { error = $"Sample {sampleId} not found." });
-
-        // Verify ownership: only sample creator or staff can trigger analysis
-        var callerId = CallerObjectId();
-        if (sample.CreatedBy != callerId && !IsStaffCaller())
-            return Forbid();
-
-        if (!Enum.TryParse<SampleState>(sample.State, ignoreCase: true, out var current))
-            return StatusCode(422, new { error = $"Sample {sampleId} has an unrecognised stored state '{sample.State}'." });
-
-        if (sample.IsLocked || SampleStateMachine.IsTerminal(current))
-            return StatusCode(409, new { error = $"TERMINAL_STATE: Sample {sampleId} is in state '{current}' and cannot be (re)started." });
-
-        string actorId = callerId;
-        string actorRole = User.IsInRole("ClinicalDirector") ? "ClinicalDirector"
-            : User.IsInRole("Signer") ? "Signer"
-            : User.IsInRole("LabAdmin") ? "LabAdmin" : "Technician";
-
-        // Readiness strictly reads real stored facts (Step 1.5)
-        var assets = await _db.MediaAssets.Where(a => a.SampleId == sampleId).ToListAsync();
-        var calSnapshot = sample.Calibration != null
-            ? new CalibrationReadinessSnapshot(sample.Calibration.Status, sample.Calibration.ExpiresAtUtc, sample.Calibration.MicronsPerPixel)
-            : null;
-        var assetSnapshots = assets.Select(a => new MediaAssetReadinessSnapshot(a.AssetId, a.Status, a.Kind)).ToList();
-        var sampleSnapshot = new SampleReadinessSnapshot(
-            sample.SampleId,
-            sample.WorkflowMode,
-            sample.ConsentAtUtc,
-            sample.ChamberTypeId,
-            sample.ChamberDepthMicrons,
-            calSnapshot);
-
-        var readiness = SampleReadiness.Check(sampleSnapshot, assetSnapshots);
-        if (!readiness.IsReady)
+        if (!Request.Headers.TryGetValue("Idempotency-Key", out var keyValues) ||
+            string.IsNullOrWhiteSpace(keyValues.FirstOrDefault()))
         {
-            return StatusCode(422, new
+            return BadRequest(new
             {
-                ok = false,
-                error = PrerequisiteReasonCodes.PrerequisitesMissing,
-                missing = readiness.MissingReasons
+                error = "IDEMPOTENCY_KEY_REQUIRED",
+                message = "Idempotency-Key header is required."
             });
         }
 
-        // Verify state machine can accept Submit event without modifying state in DB.
-        // State remains Draft so Durable Functions orchestrator can execute Submit.
-        var evt = current == SampleState.Validating ? SampleEvent.FilesValidated : SampleEvent.Submit;
-        var ctx = new TransitionContext(actorId, actorRole, Array.Empty<string>(),
-            FilesAndCalibrationPresent: true);
-        var previewResult = SampleStateMachine.Apply(current, evt, ctx);
-        if (!previewResult.Success)
-            return StatusCode(409, new { error = previewResult.FailureReason });
+        string idempotencyKey = keyValues.First()!.Trim();
+        string callerId = CallerObjectId();
+        string callerRole = User.IsInRole("ClinicalDirector") ? "ClinicalDirector"
+            : User.IsInRole("Signer") ? "Signer"
+            : User.IsInRole("LabAdmin") ? "LabAdmin"
+            : IsStaffCaller() ? "Technician" : "Patient";
 
-        var workflow = _httpClients.CreateClient("workflow");
-        var functionKey = _configuration["Workflow:FunctionKey"];
-        if (string.IsNullOrWhiteSpace(functionKey))
-            return StatusCode(503, new { error = "WORKFLOW_NOT_CONFIGURED" });
+        var result = await _submitService.SubmitAsync(
+            new SubmitSampleCommand(sampleId, callerId, callerRole, IsStaffCaller(), idempotencyKey),
+            cancellationToken);
 
-        using var startRequest = new HttpRequestMessage(
-            HttpMethod.Post,
-            $"api/v1/analysis/{Uri.EscapeDataString(sampleId)}/start");
-        startRequest.Headers.Add("x-functions-key", functionKey);
-        using var workflowResponse = await workflow.SendAsync(startRequest);
-        if (!workflowResponse.IsSuccessStatusCode)
+        return result.StatusCode switch
         {
-            _logger.LogError("Workflow starter returned {StatusCode} for sample {SampleId}",
-                (int)workflowResponse.StatusCode, sampleId);
-            return StatusCode(502, new { error = "WORKFLOW_START_FAILED" });
-        }
+            202 => Accepted($"/v1/semen/samples/{sampleId}/status", new
+            {
+                sampleId = result.SampleId,
+                state = result.State,
+                outboxId = result.OutboxId
+            }),
+            400 => BadRequest(new { error = result.ErrorCode, message = result.Message }),
+            403 => Forbid(),
+            404 => NotFound(new { error = result.ErrorCode, message = result.Message }),
+            409 => Conflict(new { error = result.ErrorCode, message = result.Message }),
+            422 => UnprocessableEntity(new { error = result.ErrorCode, message = result.Message }),
+            _ => StatusCode(result.StatusCode, new { error = result.ErrorCode, message = result.Message })
+        };
+    }
 
-        _logger.LogInformation("Durable analysis scheduled for sample {SampleId}", sampleId);
-        return Accepted(new
+    /// <summary>
+    /// Deprecated direct workflow starter. Retired in favor of POST /v1/semen/samples/{sampleId}/submit (CL-0030).
+    /// </summary>
+    [HttpPost("{sampleId}/analyze")]
+    [Authorize]
+    public IActionResult TriggerAnalysis(string sampleId)
+    {
+        string submitPath = $"/v1/semen/samples/{sampleId}/submit";
+        Response.Headers["Location"] = submitPath;
+        return StatusCode(StatusCodes.Status410Gone, new
         {
-            sampleId,
-            status = "WorkflowScheduled",
-            trackingId = sampleId
+            error = "ENDPOINT_DEPRECATED",
+            message = $"This endpoint has been retired. Use POST {submitPath} with an Idempotency-Key header instead.",
+            submitUrl = submitPath
         });
     }
 }
 
-public record RegisterBlobRequest(string MediaType, string BlobUri);
+public class BlobPropertiesDto
+{
+    public bool Exists { get; set; }
+    public long ContentLength { get; set; }
+    public string? ContentType { get; set; }
+}
+
+public class RegisterBlobRequest
+{
+    public Guid AssetId { get; set; }
+
+    /// <summary>
+    /// Deprecated: client-supplied BlobUri is ignored and never stored (ISS-015).
+    /// </summary>
+    [JsonPropertyName("blobUri")]
+    public string? BlobUri { get; set; }
+
+    /// <summary>
+    /// Deprecated: client-supplied MediaType is ignored (ISS-015).
+    /// </summary>
+    [JsonPropertyName("mediaType")]
+    public string? MediaType { get; set; }
+
+    public RegisterBlobRequest() { }
+
+    public RegisterBlobRequest(Guid assetId)
+    {
+        AssetId = assetId;
+    }
+}
 
 public record CreateSampleRequest(
     string? SampleId = null,
@@ -432,3 +745,27 @@ public record CreateSampleRequest(
     string? ChamberTypeId = null,
     string? WorkflowMode = null
 );
+
+public class UploadSasResponseDto
+{
+    public Guid AssetId { get; set; }
+    public string UploadUrl { get; set; } = string.Empty;
+    public DateTime ExpiresAtUtc { get; set; }
+    public long MaxBytes { get; set; }
+    public long BlockSizeBytes { get; set; }
+
+    /// <summary>
+    /// Deprecated: use UploadUrl instead. Kept for one release for backward compatibility.
+    /// </summary>
+    [Obsolete("Use UploadUrl instead.")]
+    public string SasUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Deprecated: use UploadUrl instead. Kept for one release for backward compatibility.
+    /// </summary>
+    [Obsolete("Use UploadUrl instead.")]
+    public string TargetBlobUri { get; set; } = string.Empty;
+
+    public string Container { get; set; } = string.Empty;
+    public string BlobName { get; set; } = string.Empty;
+}

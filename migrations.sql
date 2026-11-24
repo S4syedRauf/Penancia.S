@@ -900,3 +900,98 @@ GO
 COMMIT;
 GO
 
+BEGIN TRANSACTION;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124173808_Phase2_ScanResults'
+)
+BEGIN
+    ALTER TABLE [MediaAssets] ADD [MalwareNamesFound] nvarchar(1024) NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124173808_Phase2_ScanResults'
+)
+BEGIN
+    ALTER TABLE [MediaAssets] ADD [ScanVerdict] nvarchar(32) NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124173808_Phase2_ScanResults'
+)
+BEGIN
+    ALTER TABLE [MediaAssets] ADD [ScannedAtUtc] datetime2 NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124173808_Phase2_ScanResults'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20261124173808_Phase2_ScanResults', N'8.0.8');
+END;
+GO
+
+COMMIT;
+GO
+
+BEGIN TRANSACTION;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124192511_Phase2_OutboxIdempotency'
+)
+BEGIN
+    ALTER TABLE [OutboxMessages] ADD [IdempotencyKey] nvarchar(128) NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124192511_Phase2_OutboxIdempotency'
+)
+BEGIN
+    ALTER TABLE [OutboxMessages] ADD [SampleId] nvarchar(64) NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124192511_Phase2_OutboxIdempotency'
+)
+BEGIN
+    EXEC(N'CREATE UNIQUE INDEX [IX_OutboxMessages_IdempotencyKey] ON [OutboxMessages] ([IdempotencyKey]) WHERE [IdempotencyKey] IS NOT NULL');
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124192511_Phase2_OutboxIdempotency'
+)
+BEGIN
+    CREATE INDEX [IX_OutboxMessages_SampleId] ON [OutboxMessages] ([SampleId]);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124192511_Phase2_OutboxIdempotency'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20261124192511_Phase2_OutboxIdempotency', N'8.0.8');
+END;
+GO
+
+COMMIT;
+GO
+

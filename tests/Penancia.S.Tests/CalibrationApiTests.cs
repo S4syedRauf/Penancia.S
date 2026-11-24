@@ -1101,4 +1101,154 @@ public class CalibrationApiTests
         Assert.Equal("Rejected", refreshed.Status);
         Assert.Null(refreshed.ExpiresAtUtc);
     }
+
+    [Theory]
+    [InlineData("MeasuredPitchPx", 26.0, 0.4000, 10, 1.0, "1.0.0-phase1+test")]
+    [InlineData("MicronsPerPixel", 25.0, 0.4100, 10, 1.0, "1.0.0-phase1+test")]
+    [InlineData("LinesDetected", 25.0, 0.4000, 15, 1.0, "1.0.0-phase1+test")]
+    [InlineData("SpacingCvPct", 25.0, 0.4000, 10, 2.0, "1.0.0-phase1+test")]
+    [InlineData("ToolVersion", 25.0, 0.4000, 10, 1.0, "2.0.0-phase1+test")]
+    public async Task CalibrationResultService_TerminalValid_RedeliveryDiffersInOneField_ReturnsFailAndLeavesStoredUnchanged(
+        string fieldName, double pitchPx, double umPerPx, int lines, double cvPct, string toolVersion)
+    {
+        // H1: A terminal Valid calibration receiving a result that differs in exactly ONE field
+        // must return Fail and leave stored values unchanged.
+        var (db, _, service) = CreateSut();
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = $"sample-h1-{fieldName.ToLower()}",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal);
+        await db.SaveChangesAsync();
+
+        var validDto = new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        };
+        await service.ApplyAsync(cal.CalibrationId, validDto);
+
+        var conflictingDto = new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = pitchPx,
+            MicronsPerPixel = umPerPx,
+            LinesDetected = lines,
+            SpacingCvPct = cvPct,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = toolVersion
+        };
+
+        var result = await service.ApplyAsync(cal.CalibrationId, conflictingDto);
+        Assert.False(result.Success);
+        Assert.Contains("refuses conflicting result", result.ErrorMessage);
+
+        var refreshed = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal.CalibrationId);
+        Assert.Equal("Valid", refreshed.Status);
+        Assert.Equal(25.0, refreshed.MeasuredPitchPx);
+        Assert.Equal(0.4000, refreshed.MicronsPerPixel);
+        Assert.Equal(10, refreshed.LinesDetected);
+        Assert.Equal(1.0, refreshed.SpacingCvPct);
+        Assert.Equal("1.0.0-phase1+test", refreshed.ToolVersion);
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_TerminalValid_RedeliveryPitchDiffersBy1eMinus6_ReturnsFail()
+    {
+        // H1: A pitch difference of 1e-6 must be refused.
+        // This ensures a looser epsilon (e.g., 1.0) would fail this test.
+        var (db, _, service) = CreateSut();
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-h1-pitch-eps",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal);
+        await db.SaveChangesAsync();
+
+        var validDto = new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        };
+        await service.ApplyAsync(cal.CalibrationId, validDto);
+
+        var conflictingDto = new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.000001, // Differs by 1e-6
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        };
+
+        var result = await service.ApplyAsync(cal.CalibrationId, conflictingDto);
+        Assert.False(result.Success);
+        Assert.Contains("refuses conflicting result", result.ErrorMessage);
+
+        var refreshed = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal.CalibrationId);
+        Assert.Equal("Valid", refreshed.Status);
+        Assert.Equal(25.0, refreshed.MeasuredPitchPx);
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_NonFiniteReferencePitchUm_ReturnsRejected_InvalidReferencePitch()
+    {
+        // H1: A non-finite ReferencePitchUm must give Rejected INVALID_REFERENCE_PITCH.
+        var (db, _, service) = CreateSut();
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-h1-bad-ref",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = double.NaN,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal);
+        await db.SaveChangesAsync();
+
+        var dto = new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        };
+
+        var result = await service.ApplyAsync(cal.CalibrationId, dto);
+        Assert.True(result.Success);
+        Assert.Equal("Rejected", result.Status);
+
+        var refreshed = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal.CalibrationId);
+        Assert.Equal("Rejected", refreshed.Status);
+        Assert.Equal("INVALID_REFERENCE_PITCH", refreshed.RejectReason);
+        Assert.Null(refreshed.ExpiresAtUtc);
+    }
 }

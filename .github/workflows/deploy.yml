@@ -41,8 +41,53 @@ jobs:
         run: bash tools/check_changelog.test.sh
 
   # ============================================================
-  # 1. Build & Test Backend (.NET)
+  # 0b. Validate Bicep & Role IDs
   # ============================================================
+  validate_bicep:
+    runs-on: ubuntu-latest
+    name: Validate Bicep & Role IDs
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Azure CLI & Bicep
+        run: |
+          curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+          az bicep install
+
+      - name: Validate Bicep build & warnings
+        shell: bash
+        run: |
+          set -eo pipefail
+          mkdir -p /tmp/bicep_out
+          az bicep build --file infra/main.bicep --outdir /tmp/bicep_out 2>&1 | tee /tmp/bicep_build.log
+          WARNING_COUNT=$(grep -c " : Warning " /tmp/bicep_build.log || true)
+          echo "Bicep warnings: $WARNING_COUNT"
+          BASELINE=$(tr -d '[:space:]' < infra/bicep-warning-baseline.txt)
+          echo "Baseline: $BASELINE"
+          if [ "$WARNING_COUNT" -gt "$BASELINE" ]; then
+            echo "ERROR: Bicep warning count ($WARNING_COUNT) exceeds baseline ($BASELINE). New warnings introduced."
+            grep " : Warning " /tmp/bicep_build.log
+            exit 1
+          fi
+          echo "Bicep warning count OK (<= $BASELINE)"
+
+      - name: Validate Role IDs
+        run: bash tools/check_role_ids.sh
+
+      - name: Run Role ID check tests
+        run: bash tools/check_role_ids.test.sh
+
+      - name: Validate Queue Wiring
+        run: bash tools/check_queue_wiring.sh
+
+      - name: Run Queue Wiring check tests
+        run: bash tools/check_queue_wiring.test.sh
+
+# ============================================================
+# 1. Build & Test Backend (.NET)
+# ============================================================
   build_test_backend:
     runs-on: ubuntu-latest
     name: Build & Test Backend (.NET)

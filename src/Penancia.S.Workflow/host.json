@@ -14,6 +14,10 @@
       "storageProvider": {
         "type": "azureStorage"
       }
+    },
+    "queues": {
+      "messageEncoding": "none",
+      "maxDequeueCount": 5
     }
   }
 }

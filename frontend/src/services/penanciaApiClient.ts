@@ -2,16 +2,22 @@ import { apiUrl } from '../config';
 import type { PrivacyMode, ReportValueRow, SemenSessionRun, VaultReport } from '../types/panacea';
 
 export interface SasUploadResponse {
+  assetId: string;
+  uploadUrl: string;
   sasUrl: string;
   targetBlobUri: string;
-  expiresInMinutes: number;
+  expiresInMinutes?: number;
+  expiresAtUtc?: string;
+  maxBytes?: number;
+  blockSizeBytes?: number;
   container: string;
   blobName: string;
 }
 
 export interface RegisterBlobRequest {
-  mediaType: 'video' | 'image';
-  blobUri: string;
+  assetId: string;
+  mediaType?: 'video' | 'image';
+  blobUri?: string;
 }
 
 export interface CreateSampleRequest {
