@@ -879,7 +879,46 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 - **Known gaps / risks:** none
 - **Rollback:** Revert commit on `phase-2/upload-and-submit`.
 - **Follow-ups for the next developer or model:** Proceed to Step 2.1 (Storage, scan and event infrastructure in Bicep).
-- **Commit(s):** pending for this CL-0021 entry
+- **Commit(s):** 949aa7b
+
+---
+
+### CL-0022 — Phase 2 Step 2.1: Storage, Scan and Event Infrastructure (Bicep)
+
+- **Date (UTC):** 2026-11-24T12:00:00Z
+- **Author:** Kilo (nvidia/nemotron-3-ultra-550b-a55b)
+- **Phase / Step:** Phase 2 / Step 2.1
+- **Issue IDs:** ISS-015, ISS-016
+- **Type:** Added
+- **Summary:**
+  1. **Defender for Storage** (`Microsoft.Security/pricings`): Enabled Standard tier pricing on `StorageAccounts` for malware scanning on all blobs uploaded to the clinical media storage account (`st${prefix}`).
+  2. **Event Grid System Topic** (`Microsoft.EventGrid/systemTopics`): Created system topic `egst-${prefix}-storage` sourced from the media storage account, capturing `Microsoft.Storage.BlobCreated` and `Microsoft.Storage.BlobDeleted` events.
+  3. **Event Grid Subscriptions**: Two subscriptions on the system topic:
+     - `blob-created-subscription` → routes `BlobCreated` events to storage queue `blob-created-events`
+     - `blob-deleted-subscription` → routes `BlobDeleted` events to storage queue `blob-deleted-events`
+     Both use CloudEventSchemaV1_0 delivery schema.
+  4. **Storage Queues**: Added queue service and two queues (`blob-created-events`, `blob-deleted-events`) on the media storage account for event handling.
+  5. **Role Assignments**:
+     - User-assigned identity (`id-${prefix}-apps`) granted `EventGrid Data Sender` on the Event Grid system topic for publishing events.
+     - Event Grid system topic's system-assigned managed identity granted `Storage Queue Data Contributor` on the media storage account to publish to the event queues.
+  6. **Outputs**: Added `eventGridTopicName` and `eventGridTopicEndpoint` for downstream consumption.
+  7. All resources deployed to UAE North (`uaenorth`); storage containers remain private (`publicAccess: None`); managed identity used throughout (no keys or connection strings in Bicep).
+- **Why:** Establish the storage, malware scanning, and event-driven infrastructure foundation for Phase 2 upload pipeline (Step 2.3 will wire the upload verification receiver).
+- **Files changed:**
+  - `infra/main.bicep` — added Defender for Storage, Event Grid system topic, subscriptions, queues, role assignments, and outputs
+- **Behaviour before → after:** Malware scanning active on all blob uploads; blob lifecycle events captured via Event Grid and routed to storage queues for processing; least-privilege role assignments for Event Grid publishing.
+- **Contract / schema / API changes:** none
+- **Database migration:** none
+- **Config / env / infra changes:** New Azure resources (Defender plan, Event Grid system topic, subscriptions, storage queues, role assignments)
+- **Tests run:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 266 passed, 1 skipped, 0 failed
+  - `.venv/bin/pytest models/calibration -v` → 16 passed
+  - `cd frontend && bun test && bun run lint && bun run build` → 31 passed, lint clean, build succeeded
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed
+- **Known gaps / risks:** `az bicep build` validation pending (Azure CLI not available in current environment); must be run before deployment.
+- **Rollback:** Revert commit on `phase-2/upload-and-submit`.
+- **Follow-ups for the next developer or model:** Proceed to Step 2.2 (Harden SAS, ISS-016).
+- **Commit(s):** 132ef35
 
 ---
 
