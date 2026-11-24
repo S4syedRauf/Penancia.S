@@ -1261,6 +1261,87 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0029 — Phase 2 Step 2.5 Core (Lane B): SubmitSampleService, Outbox Idempotency Migration, and Tests
+
+- **Date (UTC):** 2026-11-24T19:30:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / Step 2.5 Core (Lane B)
+- **Issue IDs:** ISS-015, ISS-016
+- **Type:** Added & Migration
+- **Prior Commit Record:** Branched from `bdd316c` (`CL-0027` commit on `phase-2/upload-and-submit`).
+- **Summary:**
+  1. **Outbox Idempotency Schema (`OutboxMessageEntity.cs`, `PenanciaDbContext.cs`, `Phase2_OutboxIdempotency`):**
+     - Added nullable `SampleId` (nvarchar(64)) and nullable `IdempotencyKey` (nvarchar(128)) columns to `OutboxMessages`.
+     - Added `IX_OutboxMessages_SampleId` and a unique filtered index `IX_OutboxMessages_IdempotencyKey` (`[IdempotencyKey] IS NOT NULL`) so legacy calibration outbox rows with null keys do not collide.
+     - Regenerated idempotent `migrations.sql` without UTF-8 BOM; verified 0 pending model changes.
+  2. **Transactional Submission Core (`src/Penancia.S.Api/Application/SubmitSampleService.cs`):**
+     - Loads sample (`Include(s => s.Calibration)`), verifies ownership (`CreatedBy` or `IsStaff`), checks idempotent replay by `IdempotencyKey` (returning 202 with existing `OutboxId` without writing a duplicate row, or 409 if the key belongs to another sample).
+     - Verifies state transition via `SampleStateMachine.Apply(currentState, SampleEvent.Submit, ctx)` (moves `Draft` $\to$ `Validating`, returning 409 for invalid/already-submitted states).
+     - Requires a calibration row (`422 MISSING_CALIBRATION`), at least one `"Cleared"` media asset (`422 NO_CLEARED_MEDIA`), and no uncleared `"quarantine"` media assets (`422 SCAN_PENDING`).
+     - Updates `sample.State` and inserts one `OutboxMessageEntity` (`Type = "sample-submit"`, `DispatchedAtUtc = null`, `Attempts = 0`, `IdempotencyKey`) inside a single `IDbContextTransaction`.
+  3. **StartAnalysisFunction (`StartAnalysisFunction.cs`):** Verified `InstanceId = sampleId` is already set; no edits required.
+  4. **Unit & In-Memory Integration Tests (`tests/Penancia.S.Tests/SubmitSampleServiceTests.cs`):** 13 test cases against the EF Core InMemory provider covering happy path, not-owner (403), wrong state (409), no calibration (422), non-cleared media (`Issued`/`Uploaded`/`Rejected`/empty -> 422), partial scan gate (`Cleared` + `Uploaded` -> 422), idempotent replay (same key twice -> 202, 1 outbox row), different key on submitted sample (409, 1 outbox row), missing sample (404), and missing idempotency key (400).
+- **Known gaps / expected behaviour:**
+  - The outbox row is persisted in `OutboxMessages`, but no outbox dispatcher runs until **Step 3.3**. Consequently, a submitted sample will sit in its post-submit state (`Validating`) with no Durable orchestration running until Step 3.3 is implemented. This is expected and not a regression.
+- **Files changed:**
+  - `src/Penancia.S.Api/Application/SubmitSampleService.cs` — new transactional submission service.
+  - `src/Penancia.S.Data/Entities/OutboxMessageEntity.cs` — nullable `SampleId` and `IdempotencyKey`.
+  - `src/Penancia.S.Data/PenanciaDbContext.cs` — indexes on `SampleId` and unique filtered `IdempotencyKey`.
+  - `src/Penancia.S.Data/Migrations/20261124192511_Phase2_OutboxIdempotency.cs` & `.Designer.cs` & `PenanciaDbContextModelSnapshot.cs`.
+  - `migrations.sql` — regenerated idempotent script (no BOM).
+  - `tests/Penancia.S.Tests/SubmitSampleServiceTests.cs` — 13 InMemory EF Core tests.
+  - `CHANGELOG.md` — appended CL-0029 entry.
+- **Tests run & Mutation Results:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 347 passed, 1 skipped, 0 failed.
+  - `cd frontend && bun test` → 31 passed, 0 failed.
+  - `bicep build infra/main.bicep` → 0 errors, 5 warnings.
+  - `bash tools/check_role_ids.sh` → PASS (7/7 allowed).
+  - `bash tools/check_changelog.test.sh` → PASS (4/4 tests passed).
+  - Mutation testing (`SubmitSampleService.cs`): `B-Owner` CAUGHT, `B-Calibration` CAUGHT, `B-NoClearedMedia` CAUGHT, `B-ScanGatePartial` CAUGHT, `B-IdempotentReplay` CAUGHT, `B-OutboxPersistence` CAUGHT; `B-WrongState` equivalent (enforced redundantly by `SampleStateMachine.Apply`).
+- **Commit(s):** pending (branch `phase-2/submit-core`)
+
+---
+
+### CL-0028 — Phase 2 Step 2.4 Remediation (Lane A): Sticky Scan Verdicts, Identity-Based MediaQueues Wiring, and Mutation Coverage (F1–F5)
+
+- **Date (UTC):** 2026-11-24T19:25:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / Step 2.4 (Lane A)
+- **Issue IDs:** ISS-015, ISS-016
+- **Type:** Security & Fixed & Infra
+- **Prior Commit Record:** CL-0027 commit was landed at `bdd316c` on branch `phase-2/upload-and-submit` (`2026-11-25T00:11:08+05:30` / `2026-11-24T19:11:08Z`).
+- **Summary:**
+  1. **F1 (`SamplesController.RegisterBlob`):** Preserved `"Cleared"` status idempotently. If an asset is already `"Cleared"` (or `"Uploaded"`), `RegisterBlob` returns 200 OK with the current status without touching storage, `SizeBytes`, or sample blob URIs.
+  2. **F2 (`BlobEventsFunction.ProcessScanResultAsync`):** Enforced sticky terminal verdicts. If `asset.Status == "Rejected"` or `asset.ScanVerdict` is already `"Malicious"`, `"NotScanned"`, or `"Error"`, a later `"No threats found"` result logs a warning and returns `true` without modifying `Status`, `ScanVerdict`, or raising `ScanCompleted`. A later `"Malicious"` verdict on a `"Cleared"` asset still flips it to `"Rejected"` (fail-closed).
+  3. **F3 (Identity-Based Queue Wiring & CI Check):**
+     - Switched both `[QueueTrigger]` attributes in `BlobEventsFunction.cs` (`blob-created-events`, `scan-result-events`) to `Connection = "MediaQueues"`.
+     - Added `MediaQueues__queueServiceUri` (`https://${storageModule.outputs.mediaStorageName}.queue.${az.environment().suffixes.storage}`), `MediaQueues__credential = 'managedidentity'`, and `MediaQueues__clientId = appIdentity.properties.clientId` to the Workflow Container App environment in `infra/main.bicep`.
+     - Retained `AzureWebJobsStorage` strictly for Durable Task internal storage only (never for media event queues).
+     - Kept `Storage Queue Data Message Processor` (`8a0f0c08-91a1-4084-bc3d-661d67233fed`) on `mediaStorageRef` and added `tools/check_queue_wiring.sh` + `tools/check_queue_wiring.test.sh` to `.github/workflows/deploy.yml`.
+  4. **F4 (Killed Surviving Mutants):** Added assertions and tests for `TriggerAnalysis` gate `Any` vs `All` (`Cleared` + `Uploaded` -> 409 `SCAN_PENDING`), `ScannedAtUtc` population, `RaiseEventAsync` exception resilience, `OnBlobCreated` preserving existing `SizeBytes > 0`, non-quarantine container ignore, subject-only fallback (no `data.url`), array-wrapped events for both functions, `< 3` path segments rejection, and `RejectReason` text on `Not Scanned` and unknown verdicts.
+  5. **F5 (Minor Fixes):** `OnScanResult` now requires `container == "quarantine"`, verifies URL `sampleId == asset.SampleId` (dropping mismatches), and uses `asset.SampleId` as the orchestration instance ID. Removed `"Verified"` from the `TriggerAnalysis` quarantine scan-gate (which now strictly gates `quarantine` media assets on `Status == "Cleared"`).
+- **Why:** Fix reviewer-proven race conditions (late `RegisterBlob` undoing scan, late `Clean` clearing `Rejected`/`Malicious`), connect `[QueueTrigger]` to the actual media storage account via Managed Identity instead of `AzureWebJobsStorage`, and close all surviving mutation gaps.
+- **Files changed:**
+  - `src/Penancia.S.Api/Controllers/V1/SamplesController.cs` — sticky `Cleared` in `RegisterBlob`; quarantine-scoped `Cleared`-only scan-gate in `TriggerAnalysis`.
+  - `src/Penancia.S.Workflow/Functions/BlobEventsFunction.cs` — `Connection = "MediaQueues"`, sticky terminal scan verdicts, `quarantine` container check, `asset.SampleId` verification and orchestration instance ID.
+  - `infra/main.bicep` — `MediaQueues__queueServiceUri`, `MediaQueues__credential`, `MediaQueues__clientId` on Workflow container env.
+  - `tools/check_queue_wiring.sh` & `tools/check_queue_wiring.test.sh` — queue wiring validation script and 4 self-tests.
+  - `.github/workflows/deploy.yml` — added queue wiring validation steps to `validate_bicep`.
+  - `tests/Penancia.S.Tests/RegisterBlobTests.cs` — added F1, F4 gate `Any`->`All`, and F5 no-`Verified` tests (22 tests total).
+  - `tests/Penancia.S.Tests/BlobEventsFunctionTests.cs` — added F2, F3, F4, F5 tests.
+  - `CHANGELOG.md` — appended CL-0028 entry.
+- **Tests run & Mutation Results:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 349 passed, 1 skipped, 0 failed.
+  - `cd frontend && bun test` → 31 passed, 0 failed.
+  - `bicep build infra/main.bicep` → 0 errors, 5 warnings (matches baseline).
+  - `bash tools/check_role_ids.sh` & `bash tools/check_role_ids.test.sh` → PASS (7/7 allowed, 5/5 tests passed).
+  - `bash tools/check_queue_wiring.sh` & `bash tools/check_queue_wiring.test.sh` → PASS (4/4 tests passed).
+  - `bash tools/check_changelog.test.sh` → PASS (4/4 tests passed).
+  - Mutation testing (15/15 CAUGHT): `F1-ClearedSticky`, `F2-StickyTerminal`, `F2-MaliciousThenClean`, `F3-QueueConnection`, `F4-GateAnyToAll`, `F4-ScannedAtUtc`, `F4-SizeNoOverwrite`, `F4-BlobCreatedContainer`, `F4-SubjectFallback`, `F4-ArrayWrapped`, `F4-ShortPath`, `F4-RejectReason`, `F5-SampleIdMismatch`, `F5-ScanContainer`, `F5-NoVerifiedInGate`.
+- **Commit(s):** pending (branch `phase-2/fix-scan-wiring`)
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did

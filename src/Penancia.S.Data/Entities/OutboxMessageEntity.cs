@@ -9,6 +9,9 @@ public class OutboxMessageEntity
     [Key]
     public Guid Id { get; set; } = Guid.NewGuid();
 
+    [MaxLength(64)]
+    public string? SampleId { get; set; }
+
     [MaxLength(128)]
     public string Type { get; set; } = string.Empty;
 
@@ -17,4 +20,7 @@ public class OutboxMessageEntity
     public DateTime? DispatchedAtUtc { get; set; }
     public int Attempts { get; set; } = 0;
     public string? LastError { get; set; }
+
+    [MaxLength(128)]
+    public string? IdempotencyKey { get; set; }
 }

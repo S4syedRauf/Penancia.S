@@ -159,5 +159,15 @@ public class PenanciaDbContext : DbContext
         modelBuilder.Entity<OutboxMessageEntity>()
             .HasIndex(o => o.DispatchedAtUtc)
             .HasDatabaseName("IX_OutboxMessages_DispatchedAtUtc");
+
+        modelBuilder.Entity<OutboxMessageEntity>()
+            .HasIndex(o => o.SampleId)
+            .HasDatabaseName("IX_OutboxMessages_SampleId");
+
+        modelBuilder.Entity<OutboxMessageEntity>()
+            .HasIndex(o => o.IdempotencyKey)
+            .IsUnique()
+            .HasFilter("[IdempotencyKey] IS NOT NULL")
+            .HasDatabaseName("IX_OutboxMessages_IdempotencyKey");
     }
 }
