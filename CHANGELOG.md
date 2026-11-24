@@ -1065,6 +1065,54 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0025 — Phase 2 Step 2.2: Remediation of SAS Fallback, Rate Limit Window, and Test Coverage (ISS-016)
+
+- **Date (UTC):** 2026-11-24T15:20:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / Step 2.2
+- **Issue IDs:** ISS-016
+- **Type:** Fix & Security & Test
+- **Summary:** Remediation of Step 2.2 review findings: removed dummy storage key and production fallback from `BuildUserDelegationSasUriAsync` (returns HTTP 503 `STORAGE_UNAVAILABLE` and creates 0 database records if storage or delegation key is unavailable); updated rate limit query to count all `MediaAsset` records within the 1-hour window regardless of status; added tests for 503 behavior, rate limit status filtering, and closed test gaps T1–T5 verified via mutation testing.
+- **CL-0024 Record:** CL-0024's commit was landed at `7792f7f` at `2026-11-24T14:05:03Z`.
+- **Why:** Review findings for Step 2.2 identified that production code fell back to a dummy credential on signing failure instead of failing fast with 503, rate limiting only filtered on `Issued` status allowing quota exhaustion with `Uploaded` assets, and tests lacked assertions for 1h window boundaries, `sr=b`, default sizes, start time non-futility, and raw query string permissions.
+- **Files changed:**
+  - `src/Penancia.S.Api/Controllers/V1/SamplesController.cs` — removed dummy key & fallback; throws if storage unavailable; catches in endpoint returning 503 before DB write; removed `Status == "Issued"` from rate limit query; extracted `CreateBlobSasBuilder` virtual method.
+  - `tests/Penancia.S.Tests/UploadSasTests.cs` — added `TestableSamplesController` using test credential; added tests for D1 (503 and zero rows), D2 (all statuses count), and T1–T5 (boundary, `sr=b`, defaults, timing, query params).
+  - `CHANGELOG.md` — appended CL-0025 entry.
+- **Behaviour before → after:**
+  - Before: If User Delegation key failed, endpoint signed with a dummy storage key returning 200 with an un-uploadable URL and wrote an `Issued` row. Rate limit only counted `Status == "Issued"`.
+  - After: If User Delegation key fails or storage is null, logs error, returns 503 `STORAGE_UNAVAILABLE` and writes 0 rows to `MediaAssets`. Rate limit counts all assets within the last 60 minutes regardless of status.
+- **Contract / schema / API changes:** On storage / key failure, `GET/POST /v1/samples/{sampleId}/upload-sas` returns HTTP 503 with `{ "error": "STORAGE_UNAVAILABLE", "message": "Storage service unavailable." }`.
+- **Database migration:** none
+- **Config / env / infra changes:** none
+- **Tests run & Mutation Results:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 301 passed, 1 skipped, 0 failed
+  - `.venv/bin/pytest models/calibration -v` → 16 passed
+  - `cd frontend && bun test && bun run lint && bun run build` → 31 passed, lint clean, build succeeded
+  - `bash tools/check_role_ids.sh` → SUCCESS (6/6 allowed)
+  - `bash tools/check_role_ids.test.sh` → 5/5 passed
+  - `bash tools/check_changelog.test.sh` → 4/4 passed
+  - Mutation testing verification:
+    | ID | Target / Rule | Mutation Applied | Caught by Test | Result |
+    |---|---|---|---|---|
+    | D1 | Storage failure 503 & 0 rows | Return 200 with fake URL on failure | `D1_GenerateUploadSas_WhenOverrideThrows_Returns503_AndInsertsZeroRows` & `D1_GenerateUploadSas_WhenBlobsNullInProductionClass_Returns503_AndInsertsZeroRows` | KILLED |
+    | D2 | Rate limit status filter | Restored `m.Status == "Issued"` | `D2_GenerateUploadSas_RateLimit_CountsAllAssetsRegardlessOfStatus` | KILLED |
+    | T1 | Rate limit 1h window boundary | Extended window to 2 hours | `T1_GenerateUploadSas_RateLimitWindow_Row59MinutesOldCounts_Row61MinutesOldDoesNot` | KILLED |
+    | T2 | SAS resource type `sr=b` | Generated container SAS (`Resource = "c"`) | `T2_GenerateUploadSas_SasResource_IsStrictlyBlob_srEqualsB` | KILLED |
+    | T3 | Default max upload sizes | Changed video default to 100MB | `T3_GenerateUploadSas_DefaultMaxBytes_WithNoConfiguration` | KILLED |
+    | T4 | SAS start & expiry timing | Set `StartsOn = UtcNow.AddMinutes(5)` | `T4_GenerateUploadSas_SasTiming_StartIsNonFuture_AndExpiryIsBetween55And60Minutes` | KILLED |
+    | T5 | Raw query string permissions | Changed permissions to `Read \| Write` (`rw`) | `T5_GenerateUploadSas_RawQueryParameters_VerifySprHttpsAndSpCw` | KILLED |
+- **Known gaps / risks:**
+  - (1) GET and POST both create rows; decide in a later step whether to keep GET (blueprint says POST).
+  - (2) Until Steps 2.3 and 3.x, the old `RegisterBlob`/`StartAnalysis` path will see quarantine blob URIs.
+  - (3) Set real `webOrigin` per environment before first deploy, or browser uploads to quarantine will be blocked by CORS.
+  - (4) Verify at first deployment that Defender can publish to the scan topic.
+- **Rollback:** Revert commit on `phase-2/upload-and-submit`.
+- **Follow-ups for the next developer or model:** Await reviewer PASS for Step 2.2 before proceeding to Step 2.3 (Replace RegisterBlob with server verification, ISS-015).
+- **Commit(s):** pending
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did

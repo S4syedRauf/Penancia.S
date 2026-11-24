@@ -296,12 +296,12 @@ public class SamplesController : ControllerBase
             });
         }
 
-        // Rate limit: 10 SAS per sample per hour via DB count of Issued assets in last hour
+        // Rate limit: 10 SAS per sample per hour via DB count of all assets for this sample in last hour (D2)
         var oneHourAgo = DateTime.UtcNow.AddHours(-1);
-        int issuedInLastHour = await _db.MediaAssets
-            .CountAsync(m => m.SampleId == sampleId && m.Status == "Issued" && m.CreatedAtUtc >= oneHourAgo);
+        int assetsInLastHour = await _db.MediaAssets
+            .CountAsync(m => m.SampleId == sampleId && m.CreatedAtUtc >= oneHourAgo);
 
-        if (issuedInLastHour >= 10)
+        if (assetsInLastHour >= 10)
         {
             Response.Headers["Retry-After"] = "3600";
             return StatusCode(StatusCodes.Status429TooManyRequests, new
@@ -330,7 +330,20 @@ public class SamplesController : ControllerBase
         var startsOn = DateTimeOffset.UtcNow.AddMinutes(-5);
         var expiresOn = DateTimeOffset.UtcNow.AddMinutes(60);
 
-        string uploadUrl = await BuildUserDelegationSasUriAsync(container, blobName, startsOn, expiresOn);
+        string uploadUrl;
+        try
+        {
+            uploadUrl = await BuildUserDelegationSasUriAsync(container, blobName, startsOn, expiresOn);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to generate user delegation SAS URI for sample {SampleId}, asset {AssetId}", sampleId, assetId);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                error = "STORAGE_UNAVAILABLE",
+                message = "Storage service unavailable."
+            });
+        }
 
         var asset = new MediaAssetEntity
         {
@@ -366,7 +379,7 @@ public class SamplesController : ControllerBase
         });
     }
 
-    protected virtual async Task<string> BuildUserDelegationSasUriAsync(
+    protected virtual BlobSasBuilder CreateBlobSasBuilder(
         string container,
         string blobName,
         DateTimeOffset startsOn,
@@ -382,32 +395,28 @@ public class SamplesController : ControllerBase
             Protocol = SasProtocol.Https
         };
         sas.SetPermissions(BlobSasPermissions.Create | BlobSasPermissions.Write);
+        return sas;
+    }
 
-        if (_blobs != null)
+    protected virtual async Task<string> BuildUserDelegationSasUriAsync(
+        string container,
+        string blobName,
+        DateTimeOffset startsOn,
+        DateTimeOffset expiresOn)
+    {
+        if (_blobs == null)
         {
-            try
-            {
-                var delegationKey = await _blobs.GetUserDelegationKeyAsync(startsOn, expiresOn);
-                var sasParams = sas.ToSasQueryParameters(delegationKey, _blobs.AccountName);
-                var blobClient = _blobs.GetBlobContainerClient(container).GetBlobClient(blobName);
-                return new BlobUriBuilder(blobClient.Uri)
-                {
-                    Sas = sasParams
-                }.ToUri().ToString();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to obtain Azure user delegation key; falling back to simulated SAS signature.");
-            }
+            throw new InvalidOperationException("BlobServiceClient is not configured.");
         }
 
-        // Test / offline fallback: sign with dummy shared key to produce a structurally valid SAS URI with identical permissions, expiry and container
-        var dummyKey = new StorageSharedKeyCredential("stpenancias", Convert.ToBase64String(new byte[64]));
-        var queryParams = sas.ToSasQueryParameters(dummyKey);
-        var baseUri = new Uri($"https://stpenancias.blob.core.windows.net/{container}/{blobName}");
-        return new BlobUriBuilder(baseUri)
+        var sas = CreateBlobSasBuilder(container, blobName, startsOn, expiresOn);
+
+        var delegationKey = await _blobs.GetUserDelegationKeyAsync(startsOn, expiresOn);
+        var sasParams = sas.ToSasQueryParameters(delegationKey, _blobs.AccountName);
+        var blobClient = _blobs.GetBlobContainerClient(container).GetBlobClient(blobName);
+        return new BlobUriBuilder(blobClient.Uri)
         {
-            Sas = queryParams
+            Sas = sasParams
         }.ToUri().ToString();
     }
 

@@ -1,14 +1,19 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Security.Claims;
 using System.Threading.Tasks;
+using Azure;
+using Azure.Storage;
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Penancia.S.Api.Controllers.V1;
 using Penancia.S.Data;
@@ -19,10 +24,57 @@ namespace Penancia.S.Tests;
 
 public class UploadSasTests
 {
-    private static (SamplesController Controller, PenanciaDbContext Db, DefaultHttpContext HttpContext) CreateController(
+    private class TestableSamplesController : SamplesController
+    {
+        private readonly Func<string, string, DateTimeOffset, DateTimeOffset, Task<string>>? _sasGenerator;
+
+        public TestableSamplesController(
+            PenanciaDbContext db,
+            BlobServiceClient? blobs,
+            IHttpClientFactory httpClients,
+            IConfiguration configuration,
+            ILogger<SamplesController> logger,
+            Func<string, string, DateTimeOffset, DateTimeOffset, Task<string>>? sasGenerator = null)
+            : base(db, blobs!, httpClients, configuration, logger)
+        {
+            _sasGenerator = sasGenerator;
+        }
+
+        protected override Task<string> BuildUserDelegationSasUriAsync(
+            string container,
+            string blobName,
+            DateTimeOffset startsOn,
+            DateTimeOffset expiresOn)
+        {
+            if (_sasGenerator != null)
+            {
+                return _sasGenerator(container, blobName, startsOn, expiresOn);
+            }
+
+            var sas = CreateBlobSasBuilder(container, blobName, startsOn, expiresOn);
+
+            var testKey = new StorageSharedKeyCredential("stpenancias", Convert.ToBase64String(new byte[64]));
+            var queryParams = sas.ToSasQueryParameters(testKey);
+            var parsed = QueryHelpers.ParseQuery("?" + queryParams.ToString());
+            var updatedQuery = new Dictionary<string, string?>();
+            foreach (var kvp in parsed)
+            {
+                updatedQuery[kvp.Key] = kvp.Value.ToString();
+            }
+            // In User Delegation SAS, 'sr' directly reflects sas.Resource ("b", "c", etc.)
+            updatedQuery["sr"] = sas.Resource;
+
+            var queryString = QueryString.Create(updatedQuery).ToString();
+            var uri = new Uri($"https://stpenancias.blob.core.windows.net/{container}/{blobName}{queryString}");
+            return Task.FromResult(uri.ToString());
+        }
+    }
+
+    private static (TestableSamplesController Controller, PenanciaDbContext Db, DefaultHttpContext HttpContext) CreateController(
         string userId = "test-patient",
         bool isStaff = false,
-        Dictionary<string, string?>? customConfig = null)
+        Dictionary<string, string?>? customConfig = null,
+        Func<string, string, DateTimeOffset, DateTimeOffset, Task<string>>? sasGenerator = null)
     {
         var options = new DbContextOptionsBuilder<PenanciaDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
@@ -47,7 +99,7 @@ public class UploadSasTests
             .Build();
 
         var logger = NullLogger<SamplesController>.Instance;
-        var controller = new SamplesController(db, null!, null!, config, logger);
+        var controller = new TestableSamplesController(db, null!, null!, config, logger, sasGenerator);
 
         var claims = new List<Claim>
         {
@@ -83,6 +135,320 @@ public class UploadSasTests
         await db.SaveChangesAsync();
     }
 
+    [Fact]
+    public async Task D1_GenerateUploadSas_WhenOverrideThrows_Returns503_AndInsertsZeroRows()
+    {
+        var (controller, db, _) = CreateController(
+            sasGenerator: (_, _, _, _) => throw new RequestFailedException(500, "Simulated Azure delegation failure"));
+        const string sampleId = "s-storage-throw";
+        await SeedSampleAsync(db, sampleId, "test-patient");
+
+        var result = await controller.GenerateUploadSas(
+            sampleId: sampleId,
+            kind: "video",
+            contentType: "video/mp4");
+
+        var objResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, objResult.StatusCode);
+
+        var errorProp = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
+        Assert.Equal("STORAGE_UNAVAILABLE", errorProp);
+
+        Assert.Empty(db.MediaAssets);
+    }
+
+    [Fact]
+    public async Task D1_GenerateUploadSas_WhenBlobsNullInProductionClass_Returns503_AndInsertsZeroRows()
+    {
+        var options = new DbContextOptionsBuilder<PenanciaDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        var db = new PenanciaDbContext(options);
+        const string sampleId = "s-prod-null-blobs";
+        await SeedSampleAsync(db, sampleId, "test-patient");
+
+        var config = new ConfigurationBuilder().Build();
+        var logger = NullLogger<SamplesController>.Instance;
+        // Instantiate the REAL un-subclassed SamplesController with null BlobServiceClient
+        var controller = new SamplesController(db, null!, null!, config, logger);
+
+        var claims = new List<Claim> { new("oid", "test-patient"), new(ClaimTypes.Name, "test-patient") };
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth"));
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = principal }
+        };
+
+        var result = await controller.GenerateUploadSas(
+            sampleId: sampleId,
+            kind: "video",
+            contentType: "video/mp4");
+
+        var objResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, objResult.StatusCode);
+
+        var errorProp = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
+        Assert.Equal("STORAGE_UNAVAILABLE", errorProp);
+
+        Assert.Empty(db.MediaAssets);
+    }
+
+    [Fact]
+    public async Task D2_GenerateUploadSas_RateLimit_CountsAllAssetsRegardlessOfStatus()
+    {
+        var (controller, db, httpContext) = CreateController();
+        const string sampleId = "s-rate-limit-all-statuses";
+        await SeedSampleAsync(db, sampleId, "test-patient");
+
+        // Seed 10 assets with status "Uploaded", "Rejected", "Cleared" (NOT "Issued") within the last 30 minutes
+        var statuses = new[] { "Uploaded", "Uploaded", "Rejected", "Cleared", "Uploaded", "Uploaded", "Uploaded", "Uploaded", "Uploaded", "Uploaded" };
+        for (int i = 0; i < 10; i++)
+        {
+            db.MediaAssets.Add(new MediaAssetEntity
+            {
+                AssetId = Guid.NewGuid(),
+                SampleId = sampleId,
+                Kind = "video",
+                Container = "quarantine",
+                BlobName = $"{sampleId}/{Guid.NewGuid()}.mp4",
+                ContentTypeDeclared = "video/mp4",
+                Status = statuses[i],
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-30)
+            });
+        }
+        await db.SaveChangesAsync();
+
+        // 11th request must receive 429 even though NONE of the pre-existing assets are "Issued"
+        var eleventhResult = await controller.GenerateUploadSas(
+            sampleId: sampleId,
+            kind: "video",
+            contentType: "video/mp4");
+
+        var statusResult = Assert.IsType<ObjectResult>(eleventhResult);
+        Assert.Equal(StatusCodes.Status429TooManyRequests, statusResult.StatusCode);
+
+        Assert.True(httpContext.Response.Headers.ContainsKey("Retry-After"));
+        Assert.Equal("3600", httpContext.Response.Headers["Retry-After"].ToString());
+
+        var errorProp = statusResult.Value?.GetType().GetProperty("error")?.GetValue(statusResult.Value)?.ToString();
+        Assert.Equal("RATE_LIMIT_EXCEEDED", errorProp);
+
+        // Database must still have exactly the 10 seeded assets
+        Assert.Equal(10, await db.MediaAssets.CountAsync(m => m.SampleId == sampleId));
+    }
+
+    [Fact]
+    public async Task T1_GenerateUploadSas_RateLimitWindow_Row59MinutesOldCounts_Row61MinutesOldDoesNot()
+    {
+        // Sub-test A: 9 recent rows + 1 row 59 minutes old => exactly 10 in window => 11th request is 429
+        {
+            var (controllerA, dbA, _) = CreateController();
+            const string sampleA = "s-window-59min";
+            await SeedSampleAsync(dbA, sampleA, "test-patient");
+
+            for (int i = 0; i < 9; i++)
+            {
+                dbA.MediaAssets.Add(new MediaAssetEntity
+                {
+                    AssetId = Guid.NewGuid(),
+                    SampleId = sampleA,
+                    Kind = "video",
+                    Container = "quarantine",
+                    BlobName = $"{sampleA}/{Guid.NewGuid()}.mp4",
+                    ContentTypeDeclared = "video/mp4",
+                    Status = "Uploaded",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10)
+                });
+            }
+            // 59-minute-old asset (inside 1-hour window)
+            dbA.MediaAssets.Add(new MediaAssetEntity
+            {
+                AssetId = Guid.NewGuid(),
+                SampleId = sampleA,
+                Kind = "video",
+                Container = "quarantine",
+                BlobName = $"{sampleA}/{Guid.NewGuid()}.mp4",
+                ContentTypeDeclared = "video/mp4",
+                Status = "Uploaded",
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-59)
+            });
+            await dbA.SaveChangesAsync();
+
+            var resA = await controllerA.GenerateUploadSas(
+                sampleId: sampleA,
+                kind: "video",
+                contentType: "video/mp4");
+
+            var statusResult = Assert.IsType<ObjectResult>(resA);
+            Assert.Equal(StatusCodes.Status429TooManyRequests, statusResult.StatusCode);
+        }
+
+        // Sub-test B: 9 recent rows + 1 row 61 minutes old => 9 in window => 10th request is allowed (200)
+        {
+            var (controllerB, dbB, _) = CreateController();
+            const string sampleB = "s-window-61min";
+            await SeedSampleAsync(dbB, sampleB, "test-patient");
+
+            for (int i = 0; i < 9; i++)
+            {
+                dbB.MediaAssets.Add(new MediaAssetEntity
+                {
+                    AssetId = Guid.NewGuid(),
+                    SampleId = sampleB,
+                    Kind = "video",
+                    Container = "quarantine",
+                    BlobName = $"{sampleB}/{Guid.NewGuid()}.mp4",
+                    ContentTypeDeclared = "video/mp4",
+                    Status = "Uploaded",
+                    CreatedAtUtc = DateTime.UtcNow.AddMinutes(-10)
+                });
+            }
+            // 61-minute-old asset (outside 1-hour window)
+            dbB.MediaAssets.Add(new MediaAssetEntity
+            {
+                AssetId = Guid.NewGuid(),
+                SampleId = sampleB,
+                Kind = "video",
+                Container = "quarantine",
+                BlobName = $"{sampleB}/{Guid.NewGuid()}.mp4",
+                ContentTypeDeclared = "video/mp4",
+                Status = "Uploaded",
+                CreatedAtUtc = DateTime.UtcNow.AddMinutes(-61)
+            });
+            await dbB.SaveChangesAsync();
+
+            var resB = await controllerB.GenerateUploadSas(
+                sampleId: sampleB,
+                kind: "video",
+                contentType: "video/mp4");
+
+            var okResult = Assert.IsType<OkObjectResult>(resB);
+            Assert.Equal(StatusCodes.Status200OK, okResult.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task T2_GenerateUploadSas_SasResource_IsStrictlyBlob_srEqualsB()
+    {
+        var (controller, db, _) = CreateController();
+        const string sampleId = "s-resource-b";
+        await SeedSampleAsync(db, sampleId, "test-patient");
+
+        var result = await controller.GenerateUploadSas(
+            sampleId: sampleId,
+            kind: "video",
+            contentType: "video/mp4");
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<UploadSasResponseDto>(ok.Value);
+
+        var uri = new Uri(response.UploadUrl);
+        var query = QueryHelpers.ParseQuery(uri.Query);
+
+        Assert.True(query.ContainsKey("sr"), "SAS URL must contain 'sr' parameter");
+        Assert.Equal("b", query["sr"]);
+    }
+
+    [Fact]
+    public async Task T3_GenerateUploadSas_DefaultMaxBytes_WithNoConfiguration()
+    {
+        var options = new DbContextOptionsBuilder<PenanciaDbContext>()
+            .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            .Options;
+        var db = new PenanciaDbContext(options);
+        const string sampleId = "s-default-maxbytes";
+        await SeedSampleAsync(db, sampleId, "test-patient");
+
+        // Controller with completely empty IConfiguration (no MediaUpload section)
+        var emptyConfig = new ConfigurationBuilder().Build();
+        var logger = NullLogger<SamplesController>.Instance;
+        var controller = new TestableSamplesController(db, null!, null!, emptyConfig, logger);
+
+        var claims = new List<Claim> { new("oid", "test-patient"), new(ClaimTypes.Name, "test-patient") };
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "TestAuth")) }
+        };
+
+        // Video default
+        var videoRes = await controller.GenerateUploadSas(sampleId, kind: "video", contentType: "video/mp4");
+        var videoDto = Assert.IsType<UploadSasResponseDto>(Assert.IsType<OkObjectResult>(videoRes).Value);
+        Assert.Equal(524_288_000L, videoDto.MaxBytes);
+        Assert.Equal(4_194_304L, videoDto.BlockSizeBytes);
+
+        // Image default
+        var imageRes = await controller.GenerateUploadSas(sampleId, kind: "image", contentType: "image/png");
+        var imageDto = Assert.IsType<UploadSasResponseDto>(Assert.IsType<OkObjectResult>(imageRes).Value);
+        Assert.Equal(26_214_400L, imageDto.MaxBytes);
+        Assert.Equal(4_194_304L, imageDto.BlockSizeBytes);
+
+        // Calibration default
+        var calRes = await controller.GenerateUploadSas(sampleId, kind: "calibration", contentType: "image/jpeg");
+        var calDto = Assert.IsType<UploadSasResponseDto>(Assert.IsType<OkObjectResult>(calRes).Value);
+        Assert.Equal(26_214_400L, calDto.MaxBytes);
+        Assert.Equal(4_194_304L, calDto.BlockSizeBytes);
+    }
+
+    [Fact]
+    public async Task T4_GenerateUploadSas_SasTiming_StartIsNonFuture_AndExpiryIsBetween55And60Minutes()
+    {
+        var (controller, db, _) = CreateController();
+        const string sampleId = "s-timing-check";
+        await SeedSampleAsync(db, sampleId, "test-patient");
+
+        var beforeCall = DateTimeOffset.UtcNow;
+        var result = await controller.GenerateUploadSas(
+            sampleId: sampleId,
+            kind: "video",
+            contentType: "video/mp4");
+        var afterCall = DateTimeOffset.UtcNow;
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<UploadSasResponseDto>(ok.Value);
+
+        var uri = new Uri(response.UploadUrl);
+        var query = QueryHelpers.ParseQuery(uri.Query);
+
+        Assert.True(query.ContainsKey("st"), "SAS URL must contain start time 'st'");
+        Assert.True(query.ContainsKey("se"), "SAS URL must contain expiry time 'se'");
+
+        var st = DateTimeOffset.Parse(query["st"]!);
+        var se = DateTimeOffset.Parse(query["se"]!);
+
+        // Start time must not be in the future (startsOn is set to UtcNow - 5 min)
+        Assert.True(st <= afterCall, $"Start time {st} must be <= current time {afterCall}");
+
+        // Expiry minus now must be between 55 and 60.1 minutes
+        var minutesRemaining = (se - beforeCall).TotalMinutes;
+        Assert.InRange(minutesRemaining, 55.0, 60.1);
+    }
+
+    [Fact]
+    public async Task T5_GenerateUploadSas_RawQueryParameters_VerifySprHttpsAndSpCw()
+    {
+        var (controller, db, _) = CreateController();
+        const string sampleId = "s-query-raw-params";
+        await SeedSampleAsync(db, sampleId, "test-patient");
+
+        var result = await controller.GenerateUploadSas(
+            sampleId: sampleId,
+            kind: "image",
+            contentType: "image/png");
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<UploadSasResponseDto>(ok.Value);
+
+        var uri = new Uri(response.UploadUrl);
+        var query = QueryHelpers.ParseQuery(uri.Query);
+
+        // Verify straight from the parsed URL query string
+        Assert.True(query.ContainsKey("spr"), "SAS URL must contain 'spr'");
+        Assert.Equal("https", query["spr"]);
+
+        Assert.True(query.ContainsKey("sp"), "SAS URL must contain 'sp'");
+        Assert.Equal("cw", query["sp"]);
+    }
+
     [Theory]
     [InlineData("audio")]
     [InlineData("executable")]
@@ -104,11 +470,9 @@ public class UploadSasTests
         var badRequest = Assert.IsType<BadRequestObjectResult>(result);
         Assert.Equal(400, badRequest.StatusCode);
 
-        // Verify error code
         var errorProp = badRequest.Value?.GetType().GetProperty("error")?.GetValue(badRequest.Value)?.ToString();
         Assert.Equal("INVALID_MEDIA_KIND", errorProp);
 
-        // Assert nothing inserted in MediaAssets table
         Assert.Empty(db.MediaAssets);
     }
 
