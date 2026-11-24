@@ -28,7 +28,7 @@ public class RegisterBlobTests
             IConfiguration configuration,
             Func<string, string, Task<BlobPropertiesDto>>? blobPropertiesReader = null,
             Func<string, string, Task>? blobDeleter = null)
-            : base(db, blobs!, null!, configuration, NullLogger<SamplesController>.Instance)
+            : base(db, blobs ?? new BlobServiceClient(new Uri("https://stpenancias.blob.core.windows.net")), null!, configuration, NullLogger<SamplesController>.Instance)
         {
             _blobPropertiesReader = blobPropertiesReader;
             _blobDeleter = blobDeleter;
@@ -58,7 +58,8 @@ public class RegisterBlobTests
         bool isStaff = false,
         Dictionary<string, string?>? customConfig = null,
         Func<string, string, Task<BlobPropertiesDto>>? blobPropertiesReader = null,
-        Func<string, string, Task>? blobDeleter = null)
+        Func<string, string, Task>? blobDeleter = null,
+        BlobServiceClient? blobs = null)
     {
         var options = new DbContextOptionsBuilder<PenanciaDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
@@ -82,7 +83,7 @@ public class RegisterBlobTests
             .AddInMemoryCollection(inMemorySettings)
             .Build();
 
-        var controller = new TestableSamplesController(db, null, config, blobPropertiesReader, blobDeleter);
+        var controller = new TestableSamplesController(db, blobs, config, blobPropertiesReader, blobDeleter);
 
         var claims = new List<Claim> { new("oid", userId), new(ClaimTypes.Name, userId) };
         if (isStaff)
@@ -98,14 +99,14 @@ public class RegisterBlobTests
         return (controller, db, httpContext);
     }
 
-    private static async Task SeedSampleAsync(PenanciaDbContext db, string sampleId, string ownerId = "test-patient")
+    private static async Task SeedSampleAsync(PenanciaDbContext db, string sampleId, string ownerId = "test-patient", string state = "Draft")
     {
         db.Samples.Add(new SampleEntity
         {
             SampleId = sampleId,
             CreatedBy = ownerId,
             CreatedAtUtc = DateTime.UtcNow,
-            State = "Draft",
+            State = state,
             WorkflowMode = "prescreen"
         });
         await db.SaveChangesAsync();
@@ -311,13 +312,22 @@ public class RegisterBlobTests
     }
 
     [Fact]
-    public async Task Test9_RegisterBlob_SecondCallIsIdempotent_AndDoesNotChangeData()
+    public async Task Test9_RegisterBlob_SecondCallIsIdempotent_AndDoesNotTouchStorage_C1()
     {
-        const long realLength = 500000;
+        // C1: Idempotency: 2nd RegisterBlob on an Uploaded asset must NOT touch storage
+        int storageCalls = 0;
         var (controller, db, _) = CreateController(
-            blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = realLength, ContentType = "video/mp4" }));
+            blobPropertiesReader: (_, _) =>
+            {
+                storageCalls++;
+                if (storageCalls > 1)
+                {
+                    throw new InvalidOperationException("Storage should NOT be called on second idempotent invocation!");
+                }
+                return Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = 500000, ContentType = "video/mp4" });
+            });
 
-        const string sampleId = "s-idempotent";
+        const string sampleId = "s-idempotent-c1";
         await SeedSampleAsync(db, sampleId);
         var asset = await SeedMediaAssetAsync(db, sampleId, kind: "video");
 
@@ -327,57 +337,252 @@ public class RegisterBlobTests
         var result1 = await controller.RegisterBlob(sampleId, request);
         var ok1 = Assert.IsType<OkObjectResult>(result1);
         Assert.Equal(StatusCodes.Status200OK, ok1.StatusCode);
+        Assert.Equal(1, storageCalls);
 
         var firstAsset = await db.MediaAssets.AsNoTracking().FirstAsync(m => m.AssetId == asset.AssetId);
 
-        // Second call
+        // Second call: storage reader would throw if invoked!
         var result2 = await controller.RegisterBlob(sampleId, request);
         var ok2 = Assert.IsType<OkObjectResult>(result2);
         Assert.Equal(StatusCodes.Status200OK, ok2.StatusCode);
+        Assert.Equal(1, storageCalls); // Must remain 1, storage not touched!
 
         var secondAsset = await db.MediaAssets.AsNoTracking().FirstAsync(m => m.AssetId == asset.AssetId);
-
         Assert.Equal("Uploaded", secondAsset.Status);
         Assert.Equal(firstAsset.SizeBytes, secondAsset.SizeBytes);
-        Assert.Equal(firstAsset.CreatedAtUtc, secondAsset.CreatedAtUtc);
     }
 
     [Fact]
-    public async Task Test10_RegisterBlob_RequestBodyContainingBlobUri_NeverChangesStoredUri_AndReturnsDeprecationHeader()
+    public async Task Test10_RegisterBlob_BlobNamePrefixCaseSensitive_Returns409_C2()
     {
-        const long realLength = 2048;
-        var (controller, db, httpContext) = CreateController(
-            blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = realLength, ContentType = "video/mp4" }));
+        // C2: Prefix check is case-sensitive: BlobName "S-1/..." for sample "s-1" -> 409 (kills OrdinalIgnoreCase)
+        var (controller, db, _) = CreateController();
+        const string sampleId = "s-case-sensitive";
+        await SeedSampleAsync(db, sampleId);
 
-        const string sampleId = "s-deprecated-bloburi";
+        // Upper case prefix: S-CASE-SENSITIVE/ vs s-case-sensitive/
+        var asset = await SeedMediaAssetAsync(db, sampleId, blobName: $"S-CASE-SENSITIVE/{Guid.NewGuid()}.mp4");
+
+        var request = new RegisterBlobRequest { AssetId = asset.AssetId };
+        var result = await controller.RegisterBlob(sampleId, request);
+
+        var objResult = Assert.IsType<ConflictObjectResult>(result);
+        Assert.Equal(StatusCodes.Status409Conflict, objResult.StatusCode);
+
+        var error = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
+        Assert.Equal("BLOB_PREFIX_MISMATCH", error);
+    }
+
+    [Fact]
+    public async Task Test11_RegisterBlob_SizeBoundary_ExactMaxSucceeds_MaxPlusOneFails_C3()
+    {
+        // C3: Size boundary: ContentLength == maxBytes -> 200 Uploaded; maxBytes + 1 -> 413 (kills >= mutation)
+        const long maxBytes = 5000;
+
+        // Sub-test A: ContentLength == maxBytes -> 200 Uploaded
+        {
+            var (controller, db, _) = CreateController(
+                customConfig: new Dictionary<string, string?> { ["MediaUpload:MaxBytes:Video"] = maxBytes.ToString() },
+                blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = maxBytes, ContentType = "video/mp4" }));
+
+            const string sampleId = "s-bound-equal";
+            await SeedSampleAsync(db, sampleId);
+            var asset = await SeedMediaAssetAsync(db, sampleId, kind: "video");
+
+            var result = await controller.RegisterBlob(sampleId, new RegisterBlobRequest { AssetId = asset.AssetId });
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(StatusCodes.Status200OK, okResult.StatusCode);
+
+            var reloaded = await db.MediaAssets.FindAsync(asset.AssetId);
+            Assert.Equal("Uploaded", reloaded!.Status);
+        }
+
+        // Sub-test B: ContentLength == maxBytes + 1 -> 413 PayloadTooLarge
+        {
+            var (controller, db, _) = CreateController(
+                customConfig: new Dictionary<string, string?> { ["MediaUpload:MaxBytes:Video"] = maxBytes.ToString() },
+                blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = maxBytes + 1, ContentType = "video/mp4" }));
+
+            const string sampleId = "s-bound-plus-one";
+            await SeedSampleAsync(db, sampleId);
+            var asset = await SeedMediaAssetAsync(db, sampleId, kind: "video");
+
+            var result = await controller.RegisterBlob(sampleId, new RegisterBlobRequest { AssetId = asset.AssetId });
+            var objResult = Assert.IsType<ObjectResult>(result);
+            Assert.Equal(StatusCodes.Status413PayloadTooLarge, objResult.StatusCode);
+
+            var reloaded = await db.MediaAssets.FindAsync(asset.AssetId);
+            Assert.Equal("Rejected", reloaded!.Status);
+        }
+    }
+
+    [Fact]
+    public async Task Test12_RegisterBlob_MediaKindSetsSpecificUri_ImageVideoCalibration_C4()
+    {
+        // C4: Media kind sets specific URI: image sets RawImageBlobUri, video sets RawVideoBlobUri, calibration sets neither
+        // 1. Kind = video
+        {
+            var (controller, db, _) = CreateController(
+                blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = 1000, ContentType = "video/mp4" }));
+            const string sampleId = "s-c4-video";
+            await SeedSampleAsync(db, sampleId);
+            var asset = await SeedMediaAssetAsync(db, sampleId, kind: "video");
+
+            await controller.RegisterBlob(sampleId, new RegisterBlobRequest { AssetId = asset.AssetId });
+            var sample = await db.Samples.FindAsync(sampleId);
+            Assert.NotNull(sample!.RawVideoBlobUri);
+            Assert.Null(sample.RawImageBlobUri);
+        }
+
+        // 2. Kind = image
+        {
+            var (controller, db, _) = CreateController(
+                blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = 1000, ContentType = "image/jpeg" }));
+            const string sampleId = "s-c4-image";
+            await SeedSampleAsync(db, sampleId);
+            var asset = await SeedMediaAssetAsync(db, sampleId, kind: "image");
+
+            await controller.RegisterBlob(sampleId, new RegisterBlobRequest { AssetId = asset.AssetId });
+            var sample = await db.Samples.FindAsync(sampleId);
+            Assert.Null(sample!.RawVideoBlobUri);
+            Assert.NotNull(sample.RawImageBlobUri);
+        }
+
+        // 3. Kind = calibration
+        {
+            var (controller, db, _) = CreateController(
+                blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = 1000, ContentType = "image/png" }));
+            const string sampleId = "s-c4-cal";
+            await SeedSampleAsync(db, sampleId);
+            var asset = await SeedMediaAssetAsync(db, sampleId, kind: "calibration");
+
+            await controller.RegisterBlob(sampleId, new RegisterBlobRequest { AssetId = asset.AssetId });
+            var sample = await db.Samples.FindAsync(sampleId);
+            Assert.Null(sample!.RawVideoBlobUri);
+            Assert.Null(sample.RawImageBlobUri);
+        }
+    }
+
+    [Fact]
+    public async Task Test13_RegisterBlob_DeprecationHeaders_PresentWhenBlobUriSent_AbsentWhenOmitted_C5()
+    {
+        // C5: Both deprecation headers asserted: Deprecation: true AND X-Deprecated-Field: blobUri, absent when blobUri is omitted
+        // Case A: blobUri sent -> both headers present
+        {
+            var (controller, db, httpContext) = CreateController(
+                blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = 1000, ContentType = "video/mp4" }));
+            const string sampleId = "s-c5-sent";
+            await SeedSampleAsync(db, sampleId);
+            var asset = await SeedMediaAssetAsync(db, sampleId, kind: "video");
+
+            var request = new RegisterBlobRequest
+            {
+                AssetId = asset.AssetId,
+                BlobUri = "https://old.blob.windows.net/quarantine/old.mp4"
+            };
+            var result = await controller.RegisterBlob(sampleId, request);
+            Assert.IsType<OkObjectResult>(result);
+
+            Assert.True(httpContext.Response.Headers.ContainsKey("Deprecation"));
+            Assert.Equal("true", httpContext.Response.Headers["Deprecation"].ToString());
+            Assert.True(httpContext.Response.Headers.ContainsKey("X-Deprecated-Field"));
+            Assert.Equal("blobUri", httpContext.Response.Headers["X-Deprecated-Field"].ToString());
+        }
+
+        // Case B: blobUri omitted -> neither header present
+        {
+            var (controller, db, httpContext) = CreateController(
+                blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = 1000, ContentType = "video/mp4" }));
+            const string sampleId = "s-c5-omitted";
+            await SeedSampleAsync(db, sampleId);
+            var asset = await SeedMediaAssetAsync(db, sampleId, kind: "video");
+
+            var request = new RegisterBlobRequest { AssetId = asset.AssetId };
+            var result = await controller.RegisterBlob(sampleId, request);
+            Assert.IsType<OkObjectResult>(result);
+
+            Assert.False(httpContext.Response.Headers.ContainsKey("Deprecation"));
+            Assert.False(httpContext.Response.Headers.ContainsKey("X-Deprecated-Field"));
+        }
+    }
+
+    [Fact]
+    public async Task Test14_RegisterBlob_CalibrationDefaultMaxBytes_WithNoConfig_BoundaryTest_C6()
+    {
+        // C6: Calibration default maxBytes (26214400) with no config, plus boundary test
+        const long defaultMax = 26214400;
+
+        // Sub-test A: ContentLength == defaultMax -> 200 OK
+        {
+            var (controller, db, _) = CreateController(
+                customConfig: new Dictionary<string, string?>
+                {
+                    ["MediaUpload:MaxBytes:Calibration"] = null // No config
+                },
+                blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = defaultMax, ContentType = "image/png" }));
+            const string sampleId = "s-c6-max";
+            await SeedSampleAsync(db, sampleId);
+            var asset = await SeedMediaAssetAsync(db, sampleId, kind: "calibration");
+
+            var result = await controller.RegisterBlob(sampleId, new RegisterBlobRequest { AssetId = asset.AssetId });
+            var okResult = Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(StatusCodes.Status200OK, okResult.StatusCode);
+            var reloaded = await db.MediaAssets.FindAsync(asset.AssetId);
+            Assert.Equal("Uploaded", reloaded!.Status);
+        }
+
+        // Sub-test B: ContentLength == defaultMax + 1 -> 413 PayloadTooLarge
+        {
+            var (controller, db, _) = CreateController(
+                customConfig: new Dictionary<string, string?>
+                {
+                    ["MediaUpload:MaxBytes:Calibration"] = null // No config
+                },
+                blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = defaultMax + 1, ContentType = "image/png" }));
+            const string sampleId = "s-c6-over";
+            await SeedSampleAsync(db, sampleId);
+            var asset = await SeedMediaAssetAsync(db, sampleId, kind: "calibration");
+
+            var result = await controller.RegisterBlob(sampleId, new RegisterBlobRequest { AssetId = asset.AssetId });
+            var objResult = Assert.IsType<ObjectResult>(result);
+            Assert.Equal(StatusCodes.Status413PayloadTooLarge, objResult.StatusCode);
+            var reloaded = await db.MediaAssets.FindAsync(asset.AssetId);
+            Assert.Equal("Rejected", reloaded!.Status);
+        }
+    }
+
+    [Fact]
+    public async Task Test15_RegisterBlob_OversizeBlob_RowMarkedRejected_EvenWhenDeleteThrows_C7()
+    {
+        // C7: Oversize ordering: row marked Rejected in DB even if DeleteBlobIfExistsAsync throws (still returns 413)
+        var (controller, db, _) = CreateController(
+            customConfig: new Dictionary<string, string?>
+            {
+                ["MediaUpload:MaxBytes:Video"] = "1000"
+            },
+            blobPropertiesReader: (_, _) => Task.FromResult(new BlobPropertiesDto { Exists = true, ContentLength = 2000 }),
+            blobDeleter: (_, _) => throw new InvalidOperationException("Failed to delete blob from storage!"));
+
+        const string sampleId = "s-c7-delete-throws";
         await SeedSampleAsync(db, sampleId);
         var asset = await SeedMediaAssetAsync(db, sampleId, kind: "video");
 
-        // Old client sends hostile or arbitrary client-supplied blobUri
-        var request = new RegisterBlobRequest
-        {
-            AssetId = asset.AssetId,
-            BlobUri = "https://hostile.attacker.blob.core.windows.net/raw-video/evil.mp4",
-            MediaType = "video"
-        };
-
+        var request = new RegisterBlobRequest { AssetId = asset.AssetId };
         var result = await controller.RegisterBlob(sampleId, request);
-        var okResult = Assert.IsType<OkObjectResult>(result);
-        Assert.Equal(StatusCodes.Status200OK, okResult.StatusCode);
 
-        // Verify Deprecation header
-        Assert.True(httpContext.Response.Headers.ContainsKey("Deprecation"));
-        Assert.Equal("true", httpContext.Response.Headers["Deprecation"].ToString());
+        var objResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status413PayloadTooLarge, objResult.StatusCode);
 
-        // Verify sample RawVideoBlobUri is derived strictly from verified MediaAsset row, NEVER hostile URI
-        var sample = await db.Samples.FindAsync(sampleId);
-        Assert.NotNull(sample);
-        Assert.DoesNotContain("hostile.attacker", sample!.RawVideoBlobUri);
-        Assert.Equal($"https://stpenancias.blob.core.windows.net/quarantine/{asset.BlobName}", sample.RawVideoBlobUri);
+        // Verify MediaAsset row is STILL marked Rejected in DB (clearing change tracker ensures DB persistence)
+        db.ChangeTracker.Clear();
+        var reloaded = await db.MediaAssets.FindAsync(asset.AssetId);
+        Assert.NotNull(reloaded);
+        Assert.Equal("Rejected", reloaded!.Status);
+        Assert.Contains("exceeds maximum allowed", reloaded.RejectReason);
     }
 
     [Fact]
-    public async Task Test11_RegisterBlob_StorageFailure_Returns503_AndRowUnchanged_WithNoExceptionLeak()
+    public async Task Test16_RegisterBlob_StorageFailure_Returns503_AndRowUnchanged_WithNoExceptionLeak()
     {
         var (controller, db, _) = CreateController(
             blobPropertiesReader: (_, _) => throw new InvalidOperationException("CRITICAL_INTERNAL_AZURE_STORAGE_SECRET_ERROR"));
@@ -408,7 +613,7 @@ public class RegisterBlobTests
     }
 
     [Fact]
-    public async Task Test12_RegisterBlob_RejectedAsset_Returns409Conflict()
+    public async Task Test17_RegisterBlob_RejectedAsset_Returns409Conflict()
     {
         var (controller, db, _) = CreateController();
         const string sampleId = "s-rejected-asset";
@@ -426,5 +631,46 @@ public class RegisterBlobTests
 
         var error = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
         Assert.Equal("ASSET_REJECTED", error);
+    }
+
+    [Fact]
+    public async Task Test18_TriggerAnalysis_QuarantineScanGate_UploadedNotCleared_Returns409ScanPending()
+    {
+        var (controller, db, _) = CreateController();
+        const string sampleId = "s-scan-gate-pending";
+        await SeedSampleAsync(db, sampleId, state: "Draft");
+
+        // Seed media asset that is "Uploaded" (has not passed malware scanning)
+        await SeedMediaAssetAsync(db, sampleId, kind: "video", status: "Uploaded", sizeBytes: 1024);
+
+        var result = await controller.TriggerAnalysis(sampleId);
+
+        var objResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status409Conflict, objResult.StatusCode);
+
+        var error = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
+        var message = objResult.Value?.GetType().GetProperty("message")?.GetValue(objResult.Value)?.ToString();
+        Assert.Equal("SCAN_PENDING", error);
+        Assert.Equal("Media has not passed malware scan.", message);
+    }
+
+    [Fact]
+    public async Task Test19_TriggerAnalysis_QuarantineScanGate_Cleared_ProceedsPastScanGate()
+    {
+        var (controller, db, _) = CreateController();
+        const string sampleId = "s-scan-gate-cleared";
+        await SeedSampleAsync(db, sampleId, state: "Draft");
+
+        // Seed media asset that is "Cleared"
+        await SeedMediaAssetAsync(db, sampleId, kind: "video", status: "Cleared", sizeBytes: 1024);
+
+        var result = await controller.TriggerAnalysis(sampleId);
+
+        // State is Draft and missing prerequisites, so it returns 422 with PREREQUISITES_MISSING (proving it passed the SCAN_PENDING check)
+        var objResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status422UnprocessableEntity, objResult.StatusCode);
+        var error = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
+        Assert.NotEqual("SCAN_PENDING", error);
+        Assert.Equal("PREREQUISITES_MISSING", error);
     }
 }

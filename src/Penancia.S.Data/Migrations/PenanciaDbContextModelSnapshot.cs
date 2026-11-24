@@ -346,6 +346,10 @@ namespace Penancia.S.Data.Migrations
                         .HasMaxLength(32)
                         .HasColumnType("nvarchar(32)");
 
+                    b.Property<string>("MalwareNamesFound")
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
                     b.Property<string>("RejectReason")
                         .HasMaxLength(256)
                         .HasColumnType("nvarchar(256)");
@@ -354,6 +358,13 @@ namespace Penancia.S.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("ScanVerdict")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<DateTime?>("ScannedAtUtc")
+                        .HasColumnType("datetime2");
 
                     b.Property<string>("Sha256")
                         .HasMaxLength(64)

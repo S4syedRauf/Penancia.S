@@ -588,7 +588,7 @@ public class SamplesController : ControllerBase
         asset.SizeBytes = blobProps.ContentLength;
 
         // Derive canonical blob URI strictly from verified database row
-        string accountName = _blobs?.AccountName ?? "stpenancias";
+        string accountName = _blobs!.AccountName;
         string canonicalUri = $"https://{accountName}.blob.core.windows.net/{asset.Container}/{asset.BlobName}";
         if (string.Equals(asset.Kind, "video", StringComparison.OrdinalIgnoreCase))
         {
@@ -645,8 +645,8 @@ public class SamplesController : ControllerBase
 
         // Verify ownership: only sample creator or staff can trigger analysis
         var callerId = CallerObjectId();
-        // MUTATION 3: commented out owner check
-        // if (sample.CreatedBy != callerId && !IsStaffCaller()) return Forbid();
+        if (sample.CreatedBy != callerId && !IsStaffCaller())
+            return Forbid();
 
         if (!Enum.TryParse<SampleState>(sample.State, ignoreCase: true, out var current))
             return StatusCode(422, new { error = $"Sample {sampleId} has an unrecognised stored state '{sample.State}'." });
@@ -661,6 +661,19 @@ public class SamplesController : ControllerBase
 
         // Readiness strictly reads real stored facts (Step 1.5)
         var assets = await _db.MediaAssets.Where(a => a.SampleId == sampleId).ToListAsync();
+
+        // Quarantine scan-gate (CL-0027): media pointing to quarantine blobs must be Cleared before analysis
+        var mediaAssets = assets.Where(a => string.Equals(a.Kind, "video", StringComparison.OrdinalIgnoreCase) ||
+                                            string.Equals(a.Kind, "image", StringComparison.OrdinalIgnoreCase)).ToList();
+        if (mediaAssets.Count > 0 && mediaAssets.Any(a => !string.Equals(a.Status, "Cleared", StringComparison.OrdinalIgnoreCase) &&
+                                                          !string.Equals(a.Status, "Verified", StringComparison.OrdinalIgnoreCase)))
+        {
+            return StatusCode(StatusCodes.Status409Conflict, new
+            {
+                error = "SCAN_PENDING",
+                message = "Media has not passed malware scan."
+            });
+        }
         var calSnapshot = sample.Calibration != null
             ? new CalibrationReadinessSnapshot(sample.Calibration.Status, sample.Calibration.ExpiresAtUtc, sample.Calibration.MicronsPerPixel)
             : null;

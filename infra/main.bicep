@@ -784,6 +784,16 @@ resource storageContributorIdentity 'Microsoft.Authorization/roleAssignments@202
   }
 }
 
+resource storageQueueProcessorIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(mediaStorageRef.id, appIdentity.id, 'queue-message-processor')
+  scope: mediaStorageRef
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8a0f0c08-91a1-4084-bc3d-661d67233fed') // Storage Queue Data Message Processor
+    principalId: appIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
 resource sbSenderIdentity 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(serviceBusNamespace.id, appIdentity.id, 'sb-data-sender')
   scope: serviceBusNamespace

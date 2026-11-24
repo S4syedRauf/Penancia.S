@@ -1169,6 +1169,98 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0027 — Phase 2 Step 2.4: Storage Queue Event Receivers, Quarantine Scan-Gate, and Step 2.3 Carry-Overs
+
+- **Date (UTC):** 2026-11-24T23:55:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / Step 2.4
+- **Issue IDs:** ISS-015, ISS-016
+- **Type:** Added & Changed & Security
+- **Prior Commit Record:** CL-0026 commit was landed at `ee7b0fa` on branch `phase-2/upload-and-submit` (`2026-11-24T16:04:15Z`).
+- **Summary:**
+  1. **Step 2.3 Carry-Overs (C1–C7) & SamplesController Hardening:**
+     - **C1 (Idempotency storage bypass):** Verified that a second `RegisterBlob` invocation on an already `Uploaded` asset returns 200 without touching Azure Blob Storage (verified by injecting a throwing storage reader).
+     - **C2 (Case-sensitive prefix):** Enforced `StringComparison.Ordinal` prefix matching so blob names with uppercase sample IDs (e.g., `S-1/...` vs `s-1`) return 409 `BLOB_PREFIX_MISMATCH`.
+     - **C3 (Size boundary):** Verified exact boundary condition where `ContentLength == maxBytes` succeeds (200 `Uploaded`) and `maxBytes + 1` fails (413 `PAYLOAD_TOO_LARGE`).
+     - **C4 (Media kind sets specific URI):** Setting `Kind = "video"` populates `RawVideoBlobUri` while leaving `RawImageBlobUri` null; `Kind = "image"` populates `RawImageBlobUri` while leaving `RawVideoBlobUri` null; `Kind = "calibration"` populates neither.
+     - **C5 (Deprecation headers):** Both `Deprecation: true` and `X-Deprecated-Field: blobUri` headers are asserted when `blobUri` is sent, and verified absent when omitted.
+     - **C6 (Calibration default maxBytes):** Verified default 26,214,400 bytes (25 MiB) with no configuration, including exact boundary test.
+     - **C7 (Oversize ordering):** Ensured database status transition to `Rejected` is persisted prior to blob deletion, so that any failure during `DeleteBlobIfExistsAsync` still leaves the record marked `Rejected` (413).
+     - **Canonical URI Fallback:** Removed hard-coded `"stpenancias"` fallback in `RegisterBlob`, strictly referencing `_blobs!.AccountName`.
+     - **Quarantine Scan-Gate:** Gated `TriggerAnalysis` to prevent analysis of un-scanned media: if any associated media asset has not passed malware scanning (`Status != "Cleared"` and `Status != "Verified"`), returns 409 Conflict with error `SCAN_PENDING` and message `"Media has not passed malware scan."`.
+  2. **Step 2.4 Storage Queue Event Receivers (`BlobEventsFunction.cs`):**
+     - Implemented queue-triggered Azure Functions consuming storage queues (adapted to queue deviation):
+       - `OnBlobCreated`: triggers on `blob-created-events` with CloudEvents v1.0 payload. Parses subject/blob path into `{sampleId}/{assetId}{ext}`, looks up `MediaAsset`; if `Status == "Issued"`, transitions `Status = "Uploaded"` and sets `SizeBytes = data.contentLength`. Unknown assets are logged and dropped without throwing.
+       - `OnScanResult`: triggers on `scan-result-events` with EventGridSchema payload. Verifies `eventType == "Microsoft.Security.MalwareScanningResult"`. Maps `scanResultType` fail-closed: `"No threats found"` -> `ScanVerdict = "Clean"` & `Status = "Cleared"`; `"Malicious"` -> `ScanVerdict = "Malicious"` & `Status = "Rejected"`; `"Not Scanned"` -> `ScanVerdict = "NotScanned"` & `Status = "Rejected"`; any other value -> `ScanVerdict = "Error"` & `Status = "Rejected"`. Saves `Sha256`, `MalwareNamesFound`, and `ScannedAtUtc` on `MediaAsset`. If orchestrator instance exists, raises `WorkflowEvents.ScanCompleted(assetId)`.
+     - Queue encoding & poison policy configured in `host.json`: `extensions.queues.messageEncoding = "none"`, `maxDequeueCount: 5`.
+     - Added `Microsoft.Azure.Functions.Worker.Extensions.Storage.Queues` 5.5.5 to `Penancia.S.Workflow.csproj`.
+  3. **Database Migration (`Phase2_ScanResults`):**
+     - Added nullable columns `ScanVerdict` (nvarchar(32)), `MalwareNamesFound` (nvarchar(max)), `ScannedAtUtc` (datetime2) to `MediaAssets` table.
+     - Generated idempotent migration script in `migrations.sql` with zero UTF-8 BOM.
+     - Verified with `dotnet ef migrations has-pending-model-changes` (0 pending changes).
+  4. **Domain Workflow Events (`WorkflowEvents.cs`):**
+     - Created `WorkflowEvents` helper and `ScanCompletedEvent` payload contract in `Penancia.S.Domain.Workflow`.
+  5. **Infrastructure & Role Assignments (Bicep):**
+     - Assigned role `Storage Queue Data Message Processor` (`8a0f0c08-91a1-4084-bc3d-661d67233fed`) to `appIdentity` on `mediaStorageRef` in `infra/main.bicep`.
+     - Documented role ID in `infra/role-ids.md`.
+     - Built Bicep with 0 errors and 5 baseline warnings; verified `check_role_ids.sh` (7/7 allowed).
+- **Why:** Close Step 2.3 review carry-overs, gate quarantine media analysis behind malware verification, ingest asynchronous blob creation and malware scan events via Storage Queues, and notify Durable Functions orchestrations.
+- **Files changed:**
+  - `src/Penancia.S.Api/Controllers/V1/SamplesController.cs` — canonical URI account name cleanup, quarantine scan-gate in `TriggerAnalysis`.
+  - `src/Penancia.S.Data/Entities/MediaAssetEntity.cs` — added `ScanVerdict`, `MalwareNamesFound`, `ScannedAtUtc`.
+  - `src/Penancia.S.Data/Migrations/20261124173808_Phase2_ScanResults.cs` — EF Core migration for scan result columns.
+  - `src/Penancia.S.Data/Migrations/20261124173808_Phase2_ScanResults.Designer.cs` — migration designer snapshot.
+  - `src/Penancia.S.Data/Migrations/PenanciaDbContextModelSnapshot.cs` — updated EF Core model snapshot.
+  - `migrations.sql` — regenerated idempotent migration script containing `Phase2_ScanResults`.
+  - `src/Penancia.S.Domain/Workflow/WorkflowEvents.cs` — domain events for scan completion and workflow triggers.
+  - `src/Penancia.S.Workflow/Penancia.S.Workflow.csproj` — added queues extension package and build warning suppression.
+  - `src/Penancia.S.Workflow/host.json` — configured queue message encoding and poison retry policy.
+  - `src/Penancia.S.Workflow/Functions/BlobEventsFunction.cs` — queue-triggered functions `OnBlobCreated` and `OnScanResult`.
+  - `infra/main.bicep` — added Storage Queue Data Message Processor role assignment.
+  - `infra/role-ids.md` — documented role definition ID.
+  - `tests/Penancia.S.Tests/RegisterBlobTests.cs` — tests for C1–C7, scan-gate, and error handling (19 tests).
+  - `tests/Penancia.S.Tests/BlobEventsFunctionTests.cs` — tests for event receivers, poison handling, fail-closed verdicts, and orchestration events.
+  - `CHANGELOG.md` — appended CL-0027 entry.
+- **Behaviour before → after:**
+  - Before: Uploaded blobs in `quarantine` were directly analyzed without scan validation; scan results from Defender were not ingested; no queue consumers existed for `blob-created-events` or `scan-result-events`.
+  - After: `TriggerAnalysis` returns 409 `SCAN_PENDING` if media assets have not passed scanning (`Status != "Cleared"`). Storage Queue events `blob-created-events` transition issued assets to `Uploaded`; `scan-result-events` verify malware scan verdicts, map results fail-closed, record SHA-256 and malware names, set status to `Cleared` (clean) or `Rejected` (malicious/error), and raise durable orchestrator events.
+- **Contract / schema / API changes:**
+  - `MediaAssets` table schema has new columns: `ScanVerdict`, `MalwareNamesFound`, `ScannedAtUtc`.
+  - `POST /v1/samples/{sampleId}/analyze` returns 409 Conflict with `{ error = "SCAN_PENDING", message = "Media has not passed malware scan." }` if media is not Cleared.
+- **Database migration:** `Phase2_ScanResults` migration generated and added to `migrations.sql`.
+- **Config / env / infra changes:** Storage Queue Data Message Processor assigned in Bicep; host.json configured with queue extension properties.
+- **Tests run & Mutation Results:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 334 passed, 1 skipped, 0 failed, 0 warnings.
+  - `.venv/bin/pytest models/calibration -v` → 16 passed.
+  - `cd frontend && bun test && bun run lint && bun run build` → 31 passed, lint clean, build succeeded.
+  - `DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/bundle_extract /tmp/bicep build infra/main.bicep` → 0 errors, 5 warnings (matches baseline).
+  - `bash tools/check_role_ids.sh` → SUCCESS (7/7 allowed).
+  - `bash tools/check_role_ids.test.sh` → 5/5 passed.
+  - `bash tools/check_changelog.test.sh` → 4/4 passed.
+  - Mutation testing verification (100% kill rate):
+    | ID | Target / Rule | Mutation Applied | Caught by Test | Result |
+    |---|---|---|---|---|
+    | C1 | Idempotency storage bypass | Remove `asset.Status == "Uploaded"` check -> touches storage on 2nd call | `Test9_RegisterBlob_SecondCallIsIdempotent_AndDoesNotTouchStorage_C1` | KILLED |
+    | C2 | Case sensitivity Ordinal vs OrdinalIgnoreCase | Change `StringComparison.Ordinal` to `OrdinalIgnoreCase` | `Test10_RegisterBlob_BlobNamePrefixCaseSensitive_Returns409_C2` | KILLED |
+    | C3 | Size boundary > vs >= | Change `ContentLength > maxBytes` to `>= maxBytes` | `Test11_RegisterBlob_SizeBoundary_ExactMaxSucceeds_MaxPlusOneFails_C3` | KILLED |
+    | C4 | Media kind sets specific URI | Change `RawImageBlobUri` to `RawVideoBlobUri` for image kind | `Test12_RegisterBlob_MediaKindSetsSpecificUri_ImageVideoCalibration_C4` | KILLED |
+    | C5 | Deprecation header | Remove `X-Deprecated-Field` header assignment | `Test13_RegisterBlob_DeprecationHeaders_PresentWhenBlobUriSent_AbsentWhenOmitted_C5` | KILLED |
+    | C6 | Calibration default maxBytes | Change default from 26214400 to 1000 | `Test14_RegisterBlob_CalibrationDefaultMaxBytes_WithNoConfig_BoundaryTest_C6` | KILLED |
+    | C7 | Oversize save ordering | Delay `_db.SaveChangesAsync()` until after delete (delete throwing leaves row unpersisted) | `Test15_RegisterBlob_OversizeBlob_RowMarkedRejected_EvenWhenDeleteThrows_C7` | KILLED |
+    | ScanGate | Quarantine scan-gate | Bypass quarantine scan check in `TriggerAnalysis` | `Test18_TriggerAnalysis_QuarantineScanGate_UploadedNotCleared_Returns409ScanPending` | KILLED |
+    | 2.4-M | Scan result: Malicious mapped fail-open | Map `Malicious` scanResultType to `Clean` / `Cleared` | `OnScanResult_Malicious_RecordsMalicious_AndRejectsAsset` | KILLED |
+    | 2.4-C | Scan result: Clean mapped fail-closed | Map `No threats found` scanResultType to `Error` / `Rejected` | `OnScanResult_NoThreatsFound_RecordsClean_AndClearsAsset` | KILLED |
+    | 2.4-NC | Scan result: Non-clean fail-closed | Map `Not Scanned` scanResultType to `Clean` / `Cleared` | `OnScanResult_NonCleanVerdicts_NeverClears_AndMarksRejected` | KILLED |
+- **Known gaps / risks:**
+  - (1) Live EICAR upload test in `dev` needs Azure subscription and is NOT run.
+  - (2) Content sniffing and SHA-256 calculation deferred to Step 3.1 ValidateFilesActivity as per blueprint.
+  - (3) Set real `webOrigin` per environment before first deploy.
+- **Rollback:** Revert commit on `phase-2/upload-and-submit`.
+- **Follow-ups for the next developer or model:** Await reviewer PASS for Step 2.4 before proceeding to Step 2.5 (Batch completion, state machine integration, and outbox event dispatch).
+- **Commit(s):** pending
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did

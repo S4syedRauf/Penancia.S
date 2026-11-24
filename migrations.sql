@@ -900,3 +900,46 @@ GO
 COMMIT;
 GO
 
+BEGIN TRANSACTION;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124173808_Phase2_ScanResults'
+)
+BEGIN
+    ALTER TABLE [MediaAssets] ADD [MalwareNamesFound] nvarchar(1024) NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124173808_Phase2_ScanResults'
+)
+BEGIN
+    ALTER TABLE [MediaAssets] ADD [ScanVerdict] nvarchar(32) NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124173808_Phase2_ScanResults'
+)
+BEGIN
+    ALTER TABLE [MediaAssets] ADD [ScannedAtUtc] datetime2 NULL;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT * FROM [__EFMigrationsHistory]
+    WHERE [MigrationId] = N'20261124173808_Phase2_ScanResults'
+)
+BEGIN
+    INSERT INTO [__EFMigrationsHistory] ([MigrationId], [ProductVersion])
+    VALUES (N'20261124173808_Phase2_ScanResults', N'8.0.8');
+END;
+GO
+
+COMMIT;
+GO
+
