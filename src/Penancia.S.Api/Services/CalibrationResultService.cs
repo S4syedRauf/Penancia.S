@@ -60,17 +60,24 @@ public class CalibrationResultService : ICalibrationResultService
         if (cal == null)
             return CalibrationApplyResult.Fail($"Calibration {calibrationId} not found.");
 
-        // Idempotency: terminal states
+        // Idempotency: terminal states (G3)
         if (string.Equals(cal.Status, "Valid", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(cal.Status, "Rejected", StringComparison.OrdinalIgnoreCase))
         {
-            if (string.Equals(cal.Status, result.Status, StringComparison.OrdinalIgnoreCase))
+            bool isIdentical =
+                NullableDoubleEquals(cal.MeasuredPitchPx, result.MeasuredPitchPx) &&
+                NullableDoubleEquals(cal.MicronsPerPixel, result.MicronsPerPixel) &&
+                cal.LinesDetected == result.LinesDetected &&
+                NullableDoubleEquals(cal.SpacingCvPct, result.SpacingCvPct) &&
+                string.Equals(cal.ToolVersion, result.ToolVersion, StringComparison.Ordinal);
+
+            if (isIdentical)
             {
-                _logger.LogInformation("Idempotent replay for calibration {CalibrationId} with status {Status}", calibrationId, cal.Status);
+                _logger.LogInformation("Idempotent replay for calibration {CalibrationId} with stored status {Status}", calibrationId, cal.Status);
                 return CalibrationApplyResult.Ok(cal.Status);
             }
 
-            return CalibrationApplyResult.Fail($"Calibration {calibrationId} is already terminal ({cal.Status}) and cannot be changed to {result.Status}.");
+            return CalibrationApplyResult.Fail($"Calibration {calibrationId} is already terminal ({cal.Status}) and refuses conflicting result.");
         }
 
         if (!string.Equals(cal.Status, "Pending", StringComparison.OrdinalIgnoreCase))
@@ -80,23 +87,27 @@ public class CalibrationResultService : ICalibrationResultService
 
         if (string.Equals(result.Status, "Valid", StringComparison.OrdinalIgnoreCase))
         {
-            // Server-side re-checks per F2(b) before marking Valid
+            // Server-side re-checks per F2(b) & G2 before marking Valid
             string? rejectReason = null;
 
-            if (!result.MeasuredPitchPx.HasValue || result.MeasuredPitchPx.Value <= 0 ||
-                !result.MicronsPerPixel.HasValue || result.MicronsPerPixel.Value <= 0)
+            if (!result.MeasuredPitchPx.HasValue || !double.IsFinite(result.MeasuredPitchPx.Value) || result.MeasuredPitchPx.Value <= 0 ||
+                !result.MicronsPerPixel.HasValue || !double.IsFinite(result.MicronsPerPixel.Value) || result.MicronsPerPixel.Value <= 0 ||
+                !result.SpacingCvPct.HasValue || !double.IsFinite(result.SpacingCvPct.Value) || result.SpacingCvPct.Value < 0 ||
+                !result.ImageWidthPx.HasValue || result.ImageWidthPx.Value <= 0 ||
+                !result.ImageHeightPx.HasValue || result.ImageHeightPx.Value <= 0 ||
+                !result.LinesDetected.HasValue)
             {
                 rejectReason = "INVALID_MEASUREMENT";
             }
-            else if (cal.ReferencePitchUm <= 0)
+            else if (cal.ReferencePitchUm <= 0 || !double.IsFinite(cal.ReferencePitchUm))
             {
                 rejectReason = "INVALID_REFERENCE_PITCH";
             }
-            else if (!result.LinesDetected.HasValue || result.LinesDetected.Value < ProvisionalCalibrationConstants.MinLinesDetected)
+            else if (result.LinesDetected.Value < ProvisionalCalibrationConstants.MinLinesDetected)
             {
                 rejectReason = "INSUFFICIENT_LINES_DETECTED";
             }
-            else if (!result.SpacingCvPct.HasValue || result.SpacingCvPct.Value > ProvisionalCalibrationConstants.MaxSpacingCvPct)
+            else if (result.SpacingCvPct.Value > ProvisionalCalibrationConstants.MaxSpacingCvPct)
             {
                 rejectReason = "SPACING_VARIATION_EXCEEDED";
             }
@@ -174,5 +185,14 @@ public class CalibrationResultService : ICalibrationResultService
         await _db.SaveChangesAsync(cancellationToken);
         _logger.LogInformation("Applied calibration result {CalibrationId} -> {Status}", calibrationId, cal.Status);
         return CalibrationApplyResult.Ok(cal.Status);
+    }
+
+    private static bool NullableDoubleEquals(double? a, double? b, double epsilon = 1e-9)
+    {
+        if (!a.HasValue && !b.HasValue) return true;
+        if (!a.HasValue || !b.HasValue) return false;
+        if (double.IsNaN(a.Value) && double.IsNaN(b.Value)) return true;
+        if (double.IsInfinity(a.Value) && double.IsInfinity(b.Value)) return a.Value == b.Value;
+        return Math.Abs(a.Value - b.Value) < epsilon;
     }
 }

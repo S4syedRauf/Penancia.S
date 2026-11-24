@@ -1,7 +1,9 @@
+using System.Reflection;
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -395,15 +397,46 @@ public class CalibrationApiTests
     }
 
     [Fact]
-    public void CalibrationController_HasNoEndpoint_AcceptingCalibrationResultDto()
+    public void ApiAssembly_HasNoEndpoint_AcceptingCalibrationResultDto_OrRoutingCalibrationResult()
     {
-        // F1: Asserts that no HTTP endpoint on CalibrationController accepts CalibrationResultDto.
-        // Direct worker-to-API result posting is blocked. Model results must arrive via internal consumer.
-        var methods = typeof(CalibrationController).GetMethods();
-        foreach (var method in methods)
+        // G5: Scan every ControllerBase type in Penancia.S.Api assembly.
+        // Assert: no action method accepts CalibrationResultDto AND no route template contains both 'calibration' and 'result'.
+        var apiAssembly = typeof(CalibrationController).Assembly;
+        var controllerTypes = apiAssembly.GetTypes()
+            .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract);
+
+        foreach (var controller in controllerTypes)
         {
-            var parameters = method.GetParameters();
-            Assert.DoesNotContain(parameters, p => p.ParameterType == typeof(CalibrationResultDto));
+            var controllerRoute = controller.GetCustomAttribute<RouteAttribute>()?.Template ?? "";
+
+            var methods = controller.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly);
+            foreach (var method in methods)
+            {
+                var parameters = method.GetParameters();
+                Assert.DoesNotContain(parameters, p => p.ParameterType == typeof(CalibrationResultDto));
+
+                var httpAttrs = method.GetCustomAttributes().OfType<HttpMethodAttribute>();
+                foreach (var attr in httpAttrs)
+                {
+                    var actionRoute = attr.Template ?? "";
+                    var fullRoute = $"{controllerRoute}/{actionRoute}".ToLowerInvariant();
+                    bool hasCalibration = fullRoute.Contains("calibration");
+                    bool hasResult = fullRoute.Contains("result");
+                    Assert.False(hasCalibration && hasResult,
+                        $"Controller {controller.Name} method {method.Name} has forbidden route '{fullRoute}' containing both 'calibration' and 'result'.");
+                }
+
+                var directRoutes = method.GetCustomAttributes<RouteAttribute>();
+                foreach (var attr in directRoutes)
+                {
+                    var actionRoute = attr.Template ?? "";
+                    var fullRoute = $"{controllerRoute}/{actionRoute}".ToLowerInvariant();
+                    bool hasCalibration = fullRoute.Contains("calibration");
+                    bool hasResult = fullRoute.Contains("result");
+                    Assert.False(hasCalibration && hasResult,
+                        $"Controller {controller.Name} method {method.Name} has forbidden route '{fullRoute}' containing both 'calibration' and 'result'.");
+                }
+            }
         }
     }
 
@@ -434,6 +467,8 @@ public class CalibrationApiTests
             MicronsPerPixel = 0.8000,
             LinesDetected = 12,
             SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
             ToolVersion = "1.0.0-phase1+sha123"
         };
 
@@ -473,6 +508,8 @@ public class CalibrationApiTests
             MicronsPerPixel = 0.404, // 1% off
             LinesDetected = 10,
             SpacingCvPct = 2.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
             ToolVersion = "1.0.0-phase1+test"
         });
         Assert.True(resReject.Success);
@@ -500,6 +537,8 @@ public class CalibrationApiTests
             MicronsPerPixel = 0.40004, // 0.01% off (within 0.1% relative tolerance)
             LinesDetected = 10,
             SpacingCvPct = 2.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
             ToolVersion = "1.0.0-phase1+test"
         });
         Assert.True(resValid.Success);
@@ -526,6 +565,8 @@ public class CalibrationApiTests
             MicronsPerPixel = 0.4000,
             LinesDetected = 5, // < 6
             SpacingCvPct = 2.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
             ToolVersion = "1.0.0-phase1+test"
         });
         Assert.Equal("Rejected", resLines.Status);
@@ -543,6 +584,8 @@ public class CalibrationApiTests
             MicronsPerPixel = 0.4000,
             LinesDetected = 10,
             SpacingCvPct = 5.5, // > 5.0
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
             ToolVersion = "1.0.0-phase1+test"
         });
         Assert.Equal("Rejected", resCv.Status);
@@ -560,6 +603,8 @@ public class CalibrationApiTests
             MicronsPerPixel = 0.4000,
             LinesDetected = 10,
             SpacingCvPct = 2.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
             ToolVersion = "" // empty
         });
         Assert.Equal("Rejected", resVer.Status);
@@ -597,6 +642,8 @@ public class CalibrationApiTests
             MicronsPerPixel = 0.4000,
             LinesDetected = 10,
             SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
             ToolVersion = "1.0.0-phase1+test"
         });
         var after = DateTime.UtcNow.AddDays(7);
@@ -642,6 +689,8 @@ public class CalibrationApiTests
             MicronsPerPixel = 0.4000,
             LinesDetected = 10,
             SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
             ToolVersion = "1.0.0-phase1+test"
         });
         Assert.True(result.Success);
@@ -675,6 +724,8 @@ public class CalibrationApiTests
             MicronsPerPixel = 0.4000,
             LinesDetected = 10,
             SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
             ToolVersion = "1.0.0-phase1+test"
         };
         await service.ApplyAsync(validCal.CalibrationId, validDto);
@@ -757,5 +808,297 @@ public class CalibrationApiTests
         Assert.Equal("Rejected", freshCal.Status);
         Assert.Equal("UNEVEN_SPACING", freshCal.RejectReason);
         Assert.Null(freshCal.ExpiresAtUtc);
+    }
+
+    [Theory]
+    [InlineData(double.NaN, 0.4000, 1.0, 10, 800, 600)]            // NaN pitch
+    [InlineData(25.0, double.NaN, 1.0, 10, 800, 600)]            // NaN um/px
+    [InlineData(25.0, 0.4000, double.NaN, 10, 800, 600)]         // NaN CV
+    [InlineData(25.0, 0.4000, -3.0, 10, 800, 600)]               // negative CV
+    [InlineData(double.PositiveInfinity, 0.4000, 1.0, 10, 800, 600)] // +Infinity pitch
+    [InlineData(25.0, double.PositiveInfinity, 1.0, 10, 800, 600)] // +Infinity um/px
+    [InlineData(0.0, 0.4000, 1.0, 10, 800, 600)]                 // zero pitch
+    [InlineData(25.0, 0.0, 1.0, 10, 800, 600)]                   // zero um/px
+    [InlineData(25.0, 0.4000, 1.0, null, 800, 600)]              // null LinesDetected
+    [InlineData(25.0, 0.4000, null, 10, 800, 600)]               // null SpacingCvPct
+    [InlineData(25.0, 0.4000, 1.0, 10, 0, 600)]                  // zero ImageWidthPx
+    [InlineData(25.0, 0.4000, 1.0, 10, 800, -10)]                // negative ImageHeightPx
+    public async Task CalibrationResultService_Rejects_InventedAndBadNumbers_AsInvalidMeasurement(
+        double? pitchPx, double? umPerPx, double? cvPct, int? lines, int? width, int? height)
+    {
+        // G2: Before Valid, require finite positive pitch & um/px, finite non-negative CV, positive image dims, and LinesDetected.
+        // On failure, store Rejected with reason INVALID_MEASUREMENT, ExpiresAtUtc null.
+        var (db, _, service) = CreateSut();
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = $"sample-{Guid.NewGuid():N}",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal);
+        await db.SaveChangesAsync();
+
+        var dto = new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = pitchPx,
+            MicronsPerPixel = umPerPx,
+            SpacingCvPct = cvPct,
+            LinesDetected = lines,
+            ImageWidthPx = width,
+            ImageHeightPx = height,
+            ToolVersion = "1.0.0-phase1+test"
+        };
+
+        var result = await service.ApplyAsync(cal.CalibrationId, dto);
+        Assert.True(result.Success);
+        Assert.Equal("Rejected", result.Status);
+
+        var refreshed = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal.CalibrationId);
+        Assert.Equal("Rejected", refreshed.Status);
+        Assert.Equal("INVALID_MEASUREMENT", refreshed.RejectReason);
+        Assert.Null(refreshed.ExpiresAtUtc);
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_Redelivery_WorkerValidTurnedRejected_RedeliveredIdentically_ReturnsOkStoredStatus()
+    {
+        // G3(a): A worker "Valid" that server turned into Rejected, redelivered identically, must return Ok with stored status.
+        var (db, _, service) = CreateSut();
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-redelivery-rejected",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal);
+        await db.SaveChangesAsync();
+
+        // 1. Initial attempt: worker sends Valid, but CV is 5.5% (exceeds limit 5.0%), so server turns it into Rejected
+        var workerDto = new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 5.5,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        };
+
+        var firstResult = await service.ApplyAsync(cal.CalibrationId, workerDto);
+        Assert.True(firstResult.Success);
+        Assert.Equal("Rejected", firstResult.Status);
+
+        var stored = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal.CalibrationId);
+        Assert.Equal("Rejected", stored.Status);
+        Assert.Equal("SPACING_VARIATION_EXCEEDED", stored.RejectReason);
+
+        // 2. Redelivery: identical worker message arriving from Service Bus
+        var redeliveryResult = await service.ApplyAsync(cal.CalibrationId, workerDto);
+        Assert.True(redeliveryResult.Success);
+        Assert.Equal("Rejected", redeliveryResult.Status);
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_Redelivery_ValidReceivingDifferentResult_ReturnsFail_AndLeavesStoredValuesUnchanged()
+    {
+        // G3(b): A Valid calibration receiving a DIFFERENT result (e.g. pitch 50, µm/px 0.2) must return Fail and leave stored values unchanged.
+        var (db, _, service) = CreateSut();
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-redelivery-conflict",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal);
+        await db.SaveChangesAsync();
+
+        var initialValidDto = new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        };
+
+        var firstResult = await service.ApplyAsync(cal.CalibrationId, initialValidDto);
+        Assert.True(firstResult.Success);
+        Assert.Equal("Valid", firstResult.Status);
+
+        // Conflicting second result with different pitch and scale factor
+        var conflictingDto = new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 50.0,
+            MicronsPerPixel = 0.2000,
+            LinesDetected = 20,
+            SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        };
+
+        var secondResult = await service.ApplyAsync(cal.CalibrationId, conflictingDto);
+        Assert.False(secondResult.Success);
+        Assert.Contains("refuses conflicting result", secondResult.ErrorMessage);
+
+        var refreshed = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal.CalibrationId);
+        Assert.Equal("Valid", refreshed.Status);
+        Assert.Equal(25.0, refreshed.MeasuredPitchPx);
+        Assert.Equal(0.4000, refreshed.MicronsPerPixel);
+        Assert.Equal(10, refreshed.LinesDetected);
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_ToleranceBoundary_0Point05PercentAccepted_0Point2PercentRejected()
+    {
+        // G4: 0.05% off -> Valid, 0.2% off -> Rejected (RelativeScaleTolerance = 0.001 = 0.1%).
+        // Loosening RelativeScaleTolerance to 0.005 or 0.01 must fail a test.
+        var (db, _, service) = CreateSut();
+
+        // 1. 0.05% off: expected 0.4000, claimed 0.4002 -> relative error 0.0005 <= 0.001 -> Valid
+        var cal1 = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-tol-1",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal1);
+        await db.SaveChangesAsync();
+
+        var resValid = await service.ApplyAsync(cal1.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4002, // 0.05% off
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        });
+        Assert.True(resValid.Success);
+        Assert.Equal("Valid", resValid.Status);
+        var ref1 = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal1.CalibrationId);
+        Assert.Equal("Valid", ref1.Status);
+        Assert.Null(ref1.RejectReason);
+        Assert.NotNull(ref1.ExpiresAtUtc);
+
+        // 2. 0.2% off: expected 0.4000, claimed 0.4008 -> relative error 0.002 > 0.001 -> Rejected
+        var cal2 = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-tol-2",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending"
+        };
+        db.Calibrations.Add(cal2);
+        await db.SaveChangesAsync();
+
+        var resReject = await service.ApplyAsync(cal2.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4008, // 0.2% off (fails 0.1% tolerance; kills 0.005/0.01 loosening mutation)
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        });
+        Assert.True(resReject.Success);
+        Assert.Equal("Rejected", resReject.Status);
+        var ref2 = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal2.CalibrationId);
+        Assert.Equal("Rejected", ref2.Status);
+        Assert.Equal("SCALE_FACTOR_MISMATCH", ref2.RejectReason);
+        Assert.Null(ref2.ExpiresAtUtc);
+    }
+
+    [Theory]
+    [InlineData("Processing")]
+    [InlineData("Draft")]
+    [InlineData("Queued")]
+    [InlineData("Failed")]
+    public async Task CalibrationResultService_RefusesNonPendingNonTerminalStatus(string nonPendingStatus)
+    {
+        // G4 / Q8: a calibration in any non-Pending, non-terminal status is refused.
+        var (db, _, service) = CreateSut();
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-non-pending",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = nonPendingStatus
+        };
+        db.Calibrations.Add(cal);
+        await db.SaveChangesAsync();
+
+        var result = await service.ApplyAsync(cal.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.4000,
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        });
+
+        Assert.False(result.Success);
+        Assert.Contains("must be 'Pending'", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task CalibrationResultService_ServerRejectedCalibration_AlwaysHasNullExpiresAtUtc()
+    {
+        // G4 / N10: a server-rejected calibration has ExpiresAtUtc == null.
+        var (db, _, service) = CreateSut();
+        var cal = new CalibrationEntity
+        {
+            CalibrationId = Guid.NewGuid(),
+            SampleId = "sample-n10",
+            TargetId = "thorlabs-r1l3s2p",
+            ReferencePitchUm = 10.0,
+            Status = "Pending",
+            ExpiresAtUtc = DateTime.UtcNow.AddDays(7)
+        };
+        db.Calibrations.Add(cal);
+        await db.SaveChangesAsync();
+
+        var result = await service.ApplyAsync(cal.CalibrationId, new CalibrationResultDto
+        {
+            Status = "Valid",
+            MeasuredPitchPx = 25.0,
+            MicronsPerPixel = 0.404, // Mismatch -> Rejected
+            LinesDetected = 10,
+            SpacingCvPct = 1.0,
+            ImageWidthPx = 800,
+            ImageHeightPx = 600,
+            ToolVersion = "1.0.0-phase1+test"
+        });
+
+        Assert.True(result.Success);
+        Assert.Equal("Rejected", result.Status);
+
+        var refreshed = await db.Calibrations.FirstAsync(c => c.CalibrationId == cal.CalibrationId);
+        Assert.Equal("Rejected", refreshed.Status);
+        Assert.Null(refreshed.ExpiresAtUtc);
     }
 }

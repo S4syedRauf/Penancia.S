@@ -70,4 +70,14 @@ describe('Physical Catalogues Parity Test', () => {
       assert.equal(tsTarget.datasheetUrl, csTarget.datasheetUrl, `DatasheetUrl mismatch for target ${id}`);
     }
   });
+
+  test('chamber declaration count matches parsed map size', () => {
+    const declarationMatches = csSource.match(/public\s+static\s+readonly\s+ChamberType\s+\w+\s*=\s*new\s*\(/g);
+    assert.equal(csChambers.size, declarationMatches ? declarationMatches.length : 0, 'Chamber declaration count mismatch');
+  });
+
+  test('calibration target declaration count matches parsed map size', () => {
+    const targetDeclarationMatches = csSource.match(/public\s+static\s+readonly\s+CalibrationTarget\s+\w+\s*=\s*new\s*\(/g);
+    assert.equal(csTargets.size, targetDeclarationMatches ? targetDeclarationMatches.length : 0, 'Target declaration count mismatch');
+  });
 });

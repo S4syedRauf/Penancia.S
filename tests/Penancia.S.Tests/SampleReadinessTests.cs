@@ -661,4 +661,32 @@ public class SampleReadinessTests
         // Assert ValidateFilesActivity did NOT write to sample.MicronsPerPixel
         Assert.Null(refreshed.MicronsPerPixel);
     }
+
+    [Fact]
+    public async Task ValidateFilesActivity_Run_ReturnsFalse_WhenSampleFailsReadiness()
+    {
+        // G4 / V1: ValidateFilesActivity.Run returns false for a sample that fails readiness.
+        var options = new DbContextOptionsBuilder<PenanciaDbContext>()
+            .UseInMemoryDatabase(databaseName: Guid.NewGuid().ToString())
+            .Options;
+        var db = new PenanciaDbContext(options);
+
+        // Sample missing consent -> fails readiness
+        var sample = new SampleEntity
+        {
+            SampleId = "sample-wf-unready",
+            CreatedBy = "owner-1",
+            State = "Draft",
+            WorkflowMode = "prescreen",
+            ConsentAtUtc = null
+        };
+        db.Samples.Add(sample);
+        await db.SaveChangesAsync();
+
+        var activityLogger = NullLogger<ValidateFilesActivity>.Instance;
+        var activity = new ValidateFilesActivity(db, activityLogger);
+
+        var result = await activity.Run(sample.SampleId);
+        Assert.False(result);
+    }
 }

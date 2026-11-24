@@ -785,6 +785,71 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0019 — Round 5 Review Hardening: CI Pipefail, Input Sanitation, Idempotent Redelivery & Assembly Route Guards
+
+- **Date (UTC):** 2026-11-24T09:35:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 1 / Review Round 5 Fix Batch (G1–G6)
+- **Issue IDs:** ISS-001, ISS-002, ISS-003
+- **Type:** Added & Changed & Fixed & Security & Correction
+- **Summary:**
+  1. **Append-Only Corrections:**
+     - Recorded that `CL-0018`'s commit SHA is `d0be615` at `2026-11-24T06:51:09Z` (CL-0018 recorded rounded time 06:50:00Z).
+  2. **G1: CI Pipeline Hardening & Pipefail Enforcement (`.github/workflows/deploy.yml`):**
+     - Explicitly specified `shell: bash` and `set -eo pipefail` for step "Run SQL Server Integration Tests" in `.github/workflows/deploy.yml`.
+     - Required log assertion `Passed: 1` in addition to checking for zero skipped tests.
+     - Proof: executed step body under `bash --noprofile --norc -eo pipefail` with bad connection string and verified exit code 1.
+  3. **G2: CalibrationResultService Hardening Against Invented/Bad Numbers (`CalibrationResultService.cs`, `CalibrationApiTests.cs`):**
+     - Pre-validity re-checks now enforce: `double.IsFinite` on `MeasuredPitchPx`, `MicronsPerPixel`, and `SpacingCvPct`; `SpacingCvPct >= 0`; `MeasuredPitchPx > 0` and `MicronsPerPixel > 0`; positive image dimensions (`ImageWidthPx > 0`, `ImageHeightPx > 0`); and `LinesDetected.HasValue`.
+     - On failure, saves `Status = "Rejected"` with `RejectReason = "INVALID_MEASUREMENT"` and `ExpiresAtUtc = null`, returning `Ok("Rejected")`.
+     - Added comprehensive `[Theory]` test covering `NaN` pitch, `NaN` µm/px, `NaN` CV, negative CV, `+Infinity`, zero pitch, null `LinesDetected`, null `SpacingCvPct`, and non-positive image dimensions, asserting all end `Rejected` with `INVALID_MEASUREMENT`.
+  4. **G3: Service Bus At-Least-Once Delivery & Duplicate Handling (`CalibrationResultService.cs`, `CalibrationApiTests.cs`):**
+     - In terminal branch (`Valid` or `Rejected`), compares incoming `MeasuredPitchPx`, `MicronsPerPixel`, `LinesDetected`, `SpacingCvPct`, and `ToolVersion` with stored values.
+     - If identical: returns `Ok(stored status)` (e.g. worker Valid that server turned into Rejected redelivered identically succeeds with Ok("Rejected")).
+     - If different: returns `Fail("already terminal ... refuses conflicting result")` and preserves stored measurements.
+     - Added unit tests for both redelivery scenarios.
+  5. **G4: Surviving Mutations & Boundary Hardening (`CalibrationApiTests.cs`, `SampleReadinessTests.cs`):**
+     - Tolerance boundary test: 0.05% scale error accepted as `Valid`, 0.2% scale error rejected as `SCALE_FACTOR_MISMATCH` (kills 0.005/0.01 tolerance loosening mutations).
+     - Non-Pending non-terminal test (Q8): refuses statuses like `Processing`, `Draft`, `Queued`, `Failed`.
+     - Null expiry test (N10): asserts server-rejected calibrations have `ExpiresAtUtc == null`.
+     - V1 activity test: `ValidateFilesActivity_Run_ReturnsFalse_WhenSampleFailsReadiness` verifies `ValidateFilesActivity.Run` returns `false` when sample fails readiness prerequisites.
+  6. **G5: Assembly-Wide Controller Reflection Route Guard (`CalibrationApiTests.cs`):**
+     - Scans every non-abstract `ControllerBase` type in the `Penancia.S.Api` assembly.
+     - Asserts that no action parameter has type `CalibrationResultDto` AND that no route template contains both "calibration" and "result".
+     - Proof: added temporary throwaway controller `[HttpPost("samples/{sampleId}/calibration/{calibrationId}/result")]`; test failed immediately with route error; cleanly reverted.
+  7. **Optional Parity Extension (`frontend/src/data/physicalCatalogues.test.ts`):**
+     - Added assertions verifying that the count of `ChamberType ... = new(` declarations in `Catalogues.cs` matches the parsed chambers map size, and same for `CalibrationTarget`.
+- **Why:** Resolve all Round 5 review findings, eliminate silent CI pipefail errors, guarantee no invented calibration numbers can be stored as Valid, ensure reliable Service Bus redelivery handling, and enforce assembly-wide route security guards.
+- **Files changed:**
+  - `.github/workflows/deploy.yml` — shell bash, set -eo pipefail, and Passed: 1 assertion
+  - `src/Penancia.S.Api/Services/CalibrationResultService.cs` — finite/positive checks, ImageWidth/Height checks, terminal redelivery comparison
+  - `tests/Penancia.S.Tests/CalibrationApiTests.cs` — assembly-wide route guard test, bad numbers theory, redelivery tests, tolerance boundary test, non-pending refusal test, null expiry test
+  - `tests/Penancia.S.Tests/SampleReadinessTests.cs` — ValidateFilesActivity false on unready test
+  - `frontend/src/data/physicalCatalogues.test.ts` — chamber and target declaration count assertions
+  - `CHANGELOG.md` — appended CL-0019
+- **Behaviour before → after:**
+  - CI step fails immediately if SQL Server integration tests fail, even through a pipe.
+  - NaN, Infinity, negative CV, non-positive dimensions, or null measurements can never result in a Valid calibration.
+  - Identical redelivery of server-rejected results returns Ok("Rejected") instead of throwing/failing.
+  - Conflicting second results to a terminal calibration are refused and never overwrite stored truth.
+- **Contract / schema / API changes:** none
+- **Database migration:** none
+- **Config / env / infra changes:** CI workflow shell & pipefail configuration
+- **Tests run:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 259 passed, 1 skipped, 0 failed
+  - `.venv/bin/pytest models/calibration -v` → 16 passed in 1.48s
+  - `cd frontend && bun test && bun run lint && bun run build` → 31 passed, 0 lint errors, build succeeded
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed (exit 0)
+- **Known gaps / risks:**
+  - Step 2.5 idempotency: TriggerAnalysis still re-previews FilesValidated when state is Validating.
+  - Step 3.3 outbox dispatcher not yet built.
+  - Step 4.1 model-results receiver not yet built.
+- **Rollback:** Revert commit on `phase-1/data-foundation`.
+- **Follow-ups for the next developer or model:** Do not merge PR #2. Await reviewer sign-off for Phase 1.
+- **Commit(s):** pending for this CL-0019 entry
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did

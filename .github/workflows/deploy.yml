@@ -124,9 +124,11 @@ jobs:
         run: bash tools/verify_migrations.sh
 
       - name: Run SQL Server Integration Tests
+        shell: bash
         env:
           TEST_SQLSERVER_CONNECTION_STRING: "Server=127.0.0.1,1433;Database=db_fresh;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True"
         run: |
+          set -eo pipefail
           if [ -z "$TEST_SQLSERVER_CONNECTION_STRING" ]; then
             echo "ERROR: TEST_SQLSERVER_CONNECTION_STRING is missing in CI"
             exit 1
@@ -134,6 +136,10 @@ jobs:
           dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release --filter Category=SqlServer --verbosity normal --logger "console;verbosity=detailed" | tee /tmp/sqlserver_test.log
           if grep -E "Skipped:[[:space:]]+[1-9]" /tmp/sqlserver_test.log; then
             echo "ERROR: SqlServer integration tests were skipped in CI"
+            exit 1
+          fi
+          if ! grep -E "Passed:[[:space:]]+1\b" /tmp/sqlserver_test.log; then
+            echo "ERROR: SqlServer integration tests did not pass (expected 'Passed: 1')"
             exit 1
           fi
 
