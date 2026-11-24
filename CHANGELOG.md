@@ -846,7 +846,40 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
   - Step 4.1 model-results receiver not yet built.
 - **Rollback:** Revert commit on `phase-1/data-foundation`.
 - **Follow-ups for the next developer or model:** Do not merge PR #2. Await reviewer sign-off for Phase 1.
-- **Commit(s):** pending for this CL-0019 entry
+- **Commit(s):** 6df24c5
+
+---
+
+### CL-0021 — Phase 2 Start: H1 Duplicate-Delivery Field Comparison Tests & CL-0019 Commit Record
+
+- **Date (UTC):** 2026-11-24T11:25:40Z
+- **Author:** Kilo (nvidia/nemotron-3-ultra-550b-a55b)
+- **Phase / Step:** Phase 2 / Step 2.1 (H1 & H2 from Phase 1 review)
+- **Issue IDs:** ISS-001
+- **Type:** Added & Correction
+- **Summary:**
+  1. **H1: Duplicate-Delivery Field Comparison Tests** (`tests/Penancia.S.Tests/CalibrationApiTests.cs`):
+     - Added `[Theory]` test `CalibrationResultService_TerminalValid_RedeliveryDiffersInOneField_ReturnsFailAndLeavesStoredUnchanged` with 5 cases: `MeasuredPitchPx`, `MicronsPerPixel`, `LinesDetected`, `SpacingCvPct`, `ToolVersion`. Each case stores a terminal Valid calibration, then redelivers a result differing in exactly that one field. All cases must return `Fail` and leave stored values unchanged.
+     - Added `CalibrationResultService_TerminalValid_RedeliveryPitchDiffersBy1eMinus6_ReturnsFail` verifying a pitch difference of 1e-6 is refused (looser epsilon like 1.0 would fail this test).
+     - Added `CalibrationResultService_NonFiniteReferencePitchUm_ReturnsRejected_InvalidReferencePitch` verifying a non-finite `ReferencePitchUm` (NaN) gives `Rejected` with `INVALID_REFERENCE_PITCH`.
+  2. **H2: CHANGELOG Correction** — Records that CL-0019's commit is `6df24c5` at `2026-11-24T09:46:34Z`. CL-0020 is already taken by README PR #3.
+- **Why:** Address Phase 1 review leftovers H1 (missing field-comparison proof for duplicate delivery) and H2 (CHANGELOG commit record for CL-0019).
+- **Files changed:**
+  - `tests/Penancia.S.Tests/CalibrationApiTests.cs` — added three new test methods for H1
+  - `CHANGELOG.md` — appended this CL-0021 entry
+- **Behaviour before → after:** Duplicate delivery now has explicit field-level comparison tests proving each field is checked; CHANGELOG accurately records CL-0019 commit.
+- **Contract / schema / API changes:** none
+- **Database migration:** none
+- **Config / env / infra changes:** none
+- **Tests run:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 262 passed, 1 skipped, 0 failed
+  - `.venv/bin/pytest models/calibration -v` → 16 passed
+  - `cd frontend && bun test && bun run lint && bun run build` → 31 passed, lint clean, build succeeded
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed
+- **Known gaps / risks:** none
+- **Rollback:** Revert commit on `phase-2/upload-and-submit`.
+- **Follow-ups for the next developer or model:** Proceed to Step 2.1 (Storage, scan and event infrastructure in Bicep).
+- **Commit(s):** pending for this CL-0021 entry
 
 ---
 
