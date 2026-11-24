@@ -848,6 +848,30 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 - **Follow-ups for the next developer or model:** Do not merge PR #2. Await reviewer sign-off for Phase 1.
 - **Commit(s):** pending for this CL-0019 entry
 
+### CL-0020 — Docs: professional README with architecture, pipeline, roadmap and result-scale visuals
+
+- **Date (UTC):** 2026-11-24T10:23:00Z
+- **Author:** Manus (reviewer), at the repository owner's request
+- **Phase / Step:** Documentation only (outside the phase sequence; no code change)
+- **Issue IDs:** ISS-019, ISS-020 (documentation truthfulness, follow-up)
+- **Type:** Docs
+- **Summary:** Rewrote `README.md` as the public overview of the project: what it is, what is and is not measured (WHO 2021 limits from `Who2021Limits.cs`), the three-colour scale (G formula, bands, states, per-factor JSON), the one-Submit sequence, the Azure architecture, where each piece of code runs, the multi-model video pipeline, the technology stack, a language breakdown, the repository structure, the Phase 0–11 roadmap with honest status, CI quality gates, getting started, security, licence, disclaimer and references with full URLs. Mermaid diagrams render natively on GitHub.
+- **Why:** The old README reported stale test counts (171 .NET, 6 frontend) and described the browser image heuristic as the report path, which Phase 0 removed. New readers need an accurate picture of the current state and the target design.
+- **Files changed:**
+  - `README.md` — full rewrite
+  - `docs/assets/readme-banner.jpg` — new hero banner (AI-generated artwork, no data)
+  - `docs/assets/result-card-illustrative.png` — new illustrative result card (HTML-rendered; example numbers 38 % → G 45.2 amber, 12 % progressive → G 20.0 red, 55 % → G 65.5 green; labelled ILLUSTRATIVE · NOT VALIDATED)
+  - `CHANGELOG.md` — appended CL-0020
+- **Behaviour before → after:** No runtime behaviour changes. The README now marks Phases 0 and 1 Done (PR #1, PR #2), Phase 2 In progress and Phases 3–11 Planned. Test counts are quoted as reviewer-verified at `6df24c5`.
+- **Contract / schema / API changes:** none
+- **Database migration:** none
+- **Config / env / infra changes:** none
+- **Tests run:** All six Mermaid diagrams rendered successfully with the Mermaid CLI. No code was changed, so no code tests were needed.
+- **Known gaps / risks:** The README describes the target flow (Sections 5–7). Steps that Phases 2–11 deliver are marked planned in the roadmap and must be updated as each phase merges. The language shares come from GitHub Linguist on 24 Nov 2026 and will drift.
+- **Rollback:** Revert the commit on `docs/readme`.
+- **Follow-ups for the next developer or model:** CL-0020 is taken, so the next entry is **CL-0021**. Update the README status table, roadmap and status badge each time a phase merges. The Phase 2 branch must merge `main` after this PR, keeping the CHANGELOG order CL-0019, CL-0020, CL-0021.
+- **Commit(s):** see the `docs/readme` branch (the commit that adds this entry)
+
 ---
 
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
