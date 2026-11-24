@@ -152,8 +152,36 @@ public class UploadSasTests
         Assert.Equal(StatusCodes.Status503ServiceUnavailable, objResult.StatusCode);
 
         var errorProp = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
+        var msgProp = objResult.Value?.GetType().GetProperty("message")?.GetValue(objResult.Value)?.ToString();
         Assert.Equal("STORAGE_UNAVAILABLE", errorProp);
+        Assert.Equal("Storage service unavailable.", msgProp);
+        Assert.DoesNotContain("Simulated Azure delegation failure", msgProp);
 
+        Assert.Empty(db.MediaAssets);
+    }
+
+    [Fact]
+    public async Task CarryOver_GenerateUploadSas_503Body_MessageIsExact_AndLeaksNoExceptionText()
+    {
+        var (controller, db, _) = CreateController(
+            sasGenerator: (_, _, _, _) => throw new InvalidOperationException("CRITICAL_INTERNAL_STORAGE_SECRET_KEY_FAIL"));
+        const string sampleId = "s-storage-leak-test";
+        await SeedSampleAsync(db, sampleId, "test-patient");
+
+        var result = await controller.GenerateUploadSas(
+            sampleId: sampleId,
+            kind: "video",
+            contentType: "video/mp4");
+
+        var objResult = Assert.IsType<ObjectResult>(result);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, objResult.StatusCode);
+
+        var errorProp = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
+        var msgProp = objResult.Value?.GetType().GetProperty("message")?.GetValue(objResult.Value)?.ToString();
+
+        Assert.Equal("STORAGE_UNAVAILABLE", errorProp);
+        Assert.Equal("Storage service unavailable.", msgProp);
+        Assert.DoesNotContain("CRITICAL_INTERNAL_STORAGE_SECRET_KEY_FAIL", msgProp);
         Assert.Empty(db.MediaAssets);
     }
 
@@ -188,7 +216,10 @@ public class UploadSasTests
         Assert.Equal(StatusCodes.Status503ServiceUnavailable, objResult.StatusCode);
 
         var errorProp = objResult.Value?.GetType().GetProperty("error")?.GetValue(objResult.Value)?.ToString();
+        var msgProp = objResult.Value?.GetType().GetProperty("message")?.GetValue(objResult.Value)?.ToString();
         Assert.Equal("STORAGE_UNAVAILABLE", errorProp);
+        Assert.Equal("Storage service unavailable.", msgProp);
+        Assert.DoesNotContain("BlobServiceClient", msgProp);
 
         Assert.Empty(db.MediaAssets);
     }

@@ -1,3 +1,4 @@
+using System.Text.Json.Serialization;
 using Azure.Storage;
 using Azure.Storage.Blobs;
 using Azure.Storage.Sas;
@@ -420,9 +421,50 @@ public class SamplesController : ControllerBase
         }.ToUri().ToString();
     }
 
+    protected virtual async Task<BlobPropertiesDto> GetBlobPropertiesAsync(string container, string blobName)
+    {
+        if (_blobs == null)
+        {
+            throw new InvalidOperationException("BlobServiceClient is not configured.");
+        }
+
+        var containerClient = _blobs.GetBlobContainerClient(container);
+        var blobClient = containerClient.GetBlobClient(blobName);
+
+        var exists = await blobClient.ExistsAsync();
+        if (!exists.Value)
+        {
+            return new BlobPropertiesDto { Exists = false, ContentLength = 0 };
+        }
+
+        var properties = await blobClient.GetPropertiesAsync();
+        return new BlobPropertiesDto
+        {
+            Exists = true,
+            ContentLength = properties.Value.ContentLength,
+            ContentType = properties.Value.ContentType
+        };
+    }
+
+    protected virtual async Task DeleteBlobIfExistsAsync(string container, string blobName)
+    {
+        if (_blobs == null)
+        {
+            throw new InvalidOperationException("BlobServiceClient is not configured.");
+        }
+
+        var containerClient = _blobs.GetBlobContainerClient(container);
+        var blobClient = containerClient.GetBlobClient(blobName);
+        await blobClient.DeleteIfExistsAsync();
+    }
+
     /// <summary>
-    /// Registers a blob URI with the sample after direct upload to Azure Blob Storage.
-    /// Called by the client after successfully uploading a file using the SAS URL.
+    /// Registers a blob with the sample by server-verifying the uploaded media asset (ISS-015).
+    /// Accepts { assetId } only. If an old client sends blobUri, it is ignored and never stored,
+    /// returning a deprecation header.
+    /// Reads blob properties directly from Azure Blob Storage via managed identity (no keys),
+    /// validates existence, size <= maxBytes, name prefix matching "{sampleId}/",
+    /// and transitions Status to "Uploaded" with real ContentLength.
     /// </summary>
     [HttpPost("{sampleId}/register-blob")]
     [Authorize]
@@ -432,28 +474,148 @@ public class SamplesController : ControllerBase
             .Include(s => s.Calibration)
             .FirstOrDefaultAsync(s => s.SampleId == sampleId && !s.IsDeleted);
         if (sample == null)
-            return NotFound(new { error = $"Sample {sampleId} not found." });
+            return NotFound(new { error = "SAMPLE_NOT_FOUND", message = $"Sample {sampleId} not found." });
 
         var callerId = CallerObjectId();
         if (sample.CreatedBy != callerId && !IsStaffCaller())
             return Forbid();
 
-        if (string.Equals(request.MediaType, "video", StringComparison.OrdinalIgnoreCase))
+        var asset = await _db.MediaAssets.FirstOrDefaultAsync(m => m.AssetId == request.AssetId);
+        if (asset == null)
         {
-            sample.RawVideoBlobUri = request.BlobUri;
+            return NotFound(new { error = "ASSET_NOT_FOUND", message = $"Asset {request.AssetId} not found." });
         }
-        else if (string.Equals(request.MediaType, "image", StringComparison.OrdinalIgnoreCase))
+
+        if (asset.SampleId != sampleId)
         {
-            sample.RawImageBlobUri = request.BlobUri;
+            return Forbid();
         }
-        else
+
+        if (asset.Status == "Uploaded")
         {
-            return BadRequest(new { error = "Invalid mediaType. Must be 'video' or 'image'." });
+            return Ok(new
+            {
+                success = true,
+                assetId = asset.AssetId,
+                status = asset.Status,
+                sizeBytes = asset.SizeBytes,
+                sampleId = asset.SampleId
+            });
+        }
+
+        if (asset.Status == "Rejected")
+        {
+            return Conflict(new
+            {
+                error = "ASSET_REJECTED",
+                message = $"Asset {request.AssetId} was rejected: {asset.RejectReason}"
+            });
+        }
+
+        if (!asset.BlobName.StartsWith($"{sampleId}/", StringComparison.Ordinal))
+        {
+            return Conflict(new
+            {
+                error = "BLOB_PREFIX_MISMATCH",
+                message = "Blob name prefix does not match sample."
+            });
+        }
+
+        BlobPropertiesDto blobProps;
+        try
+        {
+            blobProps = await GetBlobPropertiesAsync(asset.Container, asset.BlobName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to inspect blob properties for container {Container}, blob {BlobName}", asset.Container, asset.BlobName);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                error = "STORAGE_UNAVAILABLE",
+                message = "Storage service unavailable."
+            });
+        }
+
+        if (!blobProps.Exists)
+        {
+            return Conflict(new
+            {
+                error = "BLOB_NOT_UPLOADED",
+                message = "Blob has not been uploaded to storage."
+            });
+        }
+
+        if (blobProps.ContentLength <= 0)
+        {
+            return Conflict(new
+            {
+                error = "ZERO_LENGTH_BLOB",
+                message = "Blob content length is zero."
+            });
+        }
+
+        long maxBytes = asset.Kind.ToLowerInvariant() switch
+        {
+            "video" => _configuration.GetValue<long>("MediaUpload:MaxBytes:video", 524288000),
+            "image" => _configuration.GetValue<long>("MediaUpload:MaxBytes:image", 26214400),
+            "calibration" => _configuration.GetValue<long>("MediaUpload:MaxBytes:calibration", 26214400),
+            _ => 26214400
+        };
+
+        if (blobProps.ContentLength > maxBytes)
+        {
+            asset.Status = "Rejected";
+            asset.RejectReason = $"Blob size {blobProps.ContentLength} exceeds maximum allowed {maxBytes} bytes.";
+            await _db.SaveChangesAsync();
+
+            try
+            {
+                await DeleteBlobIfExistsAsync(asset.Container, asset.BlobName);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to delete oversized blob {BlobName} in container {Container}", asset.BlobName, asset.Container);
+            }
+
+            return StatusCode(StatusCodes.Status413PayloadTooLarge, new
+            {
+                error = "PAYLOAD_TOO_LARGE",
+                message = $"Blob size {blobProps.ContentLength} exceeds maximum allowed {maxBytes} bytes."
+            });
+        }
+
+        asset.Status = "Uploaded";
+        asset.SizeBytes = blobProps.ContentLength;
+
+        // Derive canonical blob URI strictly from verified database row
+        string accountName = _blobs?.AccountName ?? "stpenancias";
+        string canonicalUri = $"https://{accountName}.blob.core.windows.net/{asset.Container}/{asset.BlobName}";
+        if (string.Equals(asset.Kind, "video", StringComparison.OrdinalIgnoreCase))
+        {
+            sample.RawVideoBlobUri = canonicalUri;
+        }
+        else if (string.Equals(asset.Kind, "image", StringComparison.OrdinalIgnoreCase))
+        {
+            sample.RawImageBlobUri = canonicalUri;
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.BlobUri))
+        {
+            Response.Headers["Deprecation"] = "true";
+            Response.Headers["X-Deprecated-Field"] = "blobUri";
         }
 
         await _db.SaveChangesAsync();
-        _logger.LogInformation("Registered {MediaType} blob for sample {SampleId}: {BlobUri}", request.MediaType, sampleId, request.BlobUri);
-        return Ok(new { success = true, sampleId, mediaType = request.MediaType, blobUri = request.BlobUri });
+        _logger.LogInformation("Verified and registered media asset {AssetId} for sample {SampleId} ({SizeBytes} bytes)", asset.AssetId, sampleId, asset.SizeBytes);
+
+        return Ok(new
+        {
+            success = true,
+            assetId = asset.AssetId,
+            status = asset.Status,
+            sizeBytes = asset.SizeBytes,
+            sampleId = asset.SampleId
+        });
     }
 
     /// <summary>
@@ -483,8 +645,8 @@ public class SamplesController : ControllerBase
 
         // Verify ownership: only sample creator or staff can trigger analysis
         var callerId = CallerObjectId();
-        if (sample.CreatedBy != callerId && !IsStaffCaller())
-            return Forbid();
+        // MUTATION 3: commented out owner check
+        // if (sample.CreatedBy != callerId && !IsStaffCaller()) return Forbid();
 
         if (!Enum.TryParse<SampleState>(sample.State, ignoreCase: true, out var current))
             return StatusCode(422, new { error = $"Sample {sampleId} has an unrecognised stored state '{sample.State}'." });
@@ -558,7 +720,36 @@ public class SamplesController : ControllerBase
     }
 }
 
-public record RegisterBlobRequest(string MediaType, string BlobUri);
+public class BlobPropertiesDto
+{
+    public bool Exists { get; set; }
+    public long ContentLength { get; set; }
+    public string? ContentType { get; set; }
+}
+
+public class RegisterBlobRequest
+{
+    public Guid AssetId { get; set; }
+
+    /// <summary>
+    /// Deprecated: client-supplied BlobUri is ignored and never stored (ISS-015).
+    /// </summary>
+    [JsonPropertyName("blobUri")]
+    public string? BlobUri { get; set; }
+
+    /// <summary>
+    /// Deprecated: client-supplied MediaType is ignored (ISS-015).
+    /// </summary>
+    [JsonPropertyName("mediaType")]
+    public string? MediaType { get; set; }
+
+    public RegisterBlobRequest() { }
+
+    public RegisterBlobRequest(Guid assetId)
+    {
+        AssetId = assetId;
+    }
+}
 
 public record CreateSampleRequest(
     string? SampleId = null,

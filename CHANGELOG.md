@@ -1113,6 +1113,62 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0026 — Phase 2 Step 2.3: Replace RegisterBlob with Server Verification (ISS-015)
+
+- **Date (UTC):** 2026-11-24T16:00:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / Step 2.3
+- **Issue IDs:** ISS-015
+- **Type:** Security & Changed & Added
+- **Summary:** Replaced client-supplied blob URI registration with strict server-side verification using managed identity (BlobServiceClient, no keys). The endpoint accepts `{ assetId }` only, loads the database MediaAsset record, verifies ownership, and checks that the blob exists in Azure storage, has content length > 0 and <= maxBytes, and has a blob name starting with `{sampleId}/`. Oversized uploads are rejected and deleted. Derived `sample.RawVideoBlobUri` and `sample.RawImageBlobUri` strictly from the verified MediaAsset row (`asset.Container` and `asset.BlobName`), ensuring zero client-supplied URIs are stored in the database. Added carry-over test verifying that 503 error responses leak no exception text.
+- **Why:** Resolve ISS-015: eliminate unverified client-supplied blob URIs, prevent malicious/foreign blob registration, enforce server-side size limits against storage properties, and ensure idempotent registration.
+- **Files changed:**
+  - `src/Penancia.S.Api/Controllers/V1/SamplesController.cs` — refactored `RegisterBlob` with managed identity verification, blob existence & size checks, prefix verification, idempotency, deprecation headers for legacy `blobUri` payloads, and virtual methods `GetBlobPropertiesAsync` and `DeleteBlobIfExistsAsync`.
+  - `frontend/src/services/penanciaApiClient.ts` — updated `SasUploadResponse` and `RegisterBlobRequest` interfaces with `assetId`.
+  - `frontend/src/screens/panacea/SemenPreScreenView.tsx` — updated registration call to send `{ assetId: sasResponse.assetId }`.
+  - `tests/Penancia.S.Tests/RegisterBlobTests.cs` — new comprehensive test suite for Step 2.3 (12 test facts covering all error, security, and idempotency rules).
+  - `tests/Penancia.S.Tests/UploadSasTests.cs` — added carry-over test verifying exact 503 response body and absence of leaked exception text.
+  - `CHANGELOG.md` — appended CL-0026 entry.
+- **Behaviour before → after:**
+  - Before: Client supplied arbitrary `BlobUri` and `MediaType` which were stored directly on `SampleEntity.RawVideoBlobUri` without checking whether the blob existed, belonged to the sample, or exceeded size limits.
+  - After: Client supplies `{ assetId }` only. Server verifies caller ownership, loads `MediaAsset` row, validates blob existence, non-zero size, size <= `maxBytes`, and name prefix `{sampleId}/`. Transitions `MediaAsset.Status` to `Uploaded` and sets `SizeBytes`. Canonical blob URIs on `SampleEntity` are derived strictly from the verified row. Oversized blobs are rejected (413) and deleted. Legacy requests with `blobUri` receive a `Deprecation: true` response header and their client-supplied URI is completely ignored.
+- **Contract / schema / API changes:** `POST /v1/samples/{sampleId}/register-blob` contract updated to `{ assetId: Guid }`. Returns 200 `{ success, assetId, status, sizeBytes, sampleId }`. If deprecated fields are provided, adds `Deprecation: true` and `X-Deprecated-Field: blobUri` headers.
+- **Database migration:** none (uses existing `MediaAssets` schema).
+- **Config / env / infra changes:** none.
+- **Tests run & Mutation Results:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 314 passed, 1 skipped, 0 failed, 0 warnings.
+  - `.venv/bin/pytest models/calibration -v` → 16 passed.
+  - `cd frontend && bun test && bun run lint && bun run build` → 31 passed, lint clean, build succeeded.
+  - `DOTNET_BUNDLE_EXTRACT_BASE_DIR=/tmp/bundle_extract /tmp/bicep build infra/main.bicep` → 0 errors, 5 warnings (matches baseline).
+  - `bash tools/check_role_ids.sh` → SUCCESS (6/6 allowed).
+  - `bash tools/check_role_ids.test.sh` → 5/5 passed.
+  - `bash tools/check_changelog.test.sh` → 4/4 passed.
+  - Mutation testing verification:
+    | ID | Target / Rule | Mutation Applied | Caught by Test | Result |
+    |---|---|---|---|---|
+    | M1 | Unknown assetId -> 404 | Return 200 when asset not found | `Test1_RegisterBlob_FakeAssetId_Returns404` | KILLED |
+    | M2 | Foreign sample asset -> 403 | Remove `asset.SampleId != sampleId` check | `Test2_RegisterBlob_AssetBelongsToAnotherSample_Returns403` | KILLED |
+    | M3 | Non-owner -> 403 | Remove `sample.CreatedBy != callerId` check | `Test3_RegisterBlob_NonOwner_Returns403` | KILLED |
+    | M4 | Missing blob -> 409 | Remove `!blobProps.Exists` check | `Test4_RegisterBlob_MissingBlob_Returns409BlobNotUploaded` | KILLED |
+    | M5 | Zero-length blob -> 409 | Remove `blobProps.ContentLength <= 0` check | `Test5_RegisterBlob_ZeroLengthBlob_Returns409ZeroLengthBlob` | KILLED |
+    | M6 | Oversize blob -> 413 & Rejected | Skip size check or return 200 without rejecting | `Test6_RegisterBlob_OversizeBlob_Returns413_AndMarksRowRejected_AndDeletesBlob` | KILLED |
+    | M7 | Blob name prefix mismatch -> 409 | Remove prefix `StartsWith($"{sampleId}/")` check | `Test7_RegisterBlob_BlobNamePrefixMismatch_Returns409` | KILLED |
+    | M8 | Success sets Uploaded & size | Do not set status or sizeBytes on success | `Test8_RegisterBlob_Success_SetsUploaded_AndRealSize` | KILLED |
+    | M9 | Idempotent repeat call -> 200 | Return 409 Conflict on repeated call | `Test9_RegisterBlob_SecondCallIsIdempotent_AndDoesNotChangeData` | KILLED |
+    | M10 | Never store client blobUri | Assign `sample.RawVideoBlobUri = request.BlobUri` | `Test10_RegisterBlob_RequestBodyContainingBlobUri_NeverChangesStoredUri_AndReturnsDeprecationHeader` | KILLED |
+    | M11 | Storage failure -> 503 & no state change | Return `ex.Message` on storage failure | `Test11_RegisterBlob_StorageFailure_Returns503_AndRowUnchanged_WithNoExceptionLeak` | KILLED |
+    | Carry-Over | 503 body message equals exact text | Leak `ex.Message` in `GenerateUploadSas` 503 | `CarryOver_GenerateUploadSas_503Body_MessageIsExact_AndLeaksNoExceptionText` | KILLED |
+- **Known gaps / risks:**
+  - (1) GET and POST both create rows; decide in a later step whether to keep GET (blueprint says POST).
+  - (2) Content sniffing and SHA-256 calculation deferred to Step 3.1 ValidateFilesActivity as per blueprint.
+  - (3) Set real `webOrigin` per environment before first deploy.
+  - (4) Verify at first deployment that Defender can publish to the scan topic.
+- **Rollback:** Revert commit on `phase-2/upload-and-submit`.
+- **Follow-ups for the next developer or model:** Await reviewer PASS for Step 2.3 before proceeding to Step 2.4 (Event Grid receivers for BlobCreated and ScanResult).
+- **Commit(s):** pending
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did

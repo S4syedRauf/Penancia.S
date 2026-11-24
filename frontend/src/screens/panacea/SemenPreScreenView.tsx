@@ -324,11 +324,10 @@ try {
             setProgressPct(40 + Math.round(pct * 0.3)); // 40-70%
           });
 
-          // Step 2d: Register blob URI with backend
+          // Step 2d: Register blob with backend using verified assetId (ISS-015)
           setProgressPct(75);
           await penanciaApi.registerBlob(sampleId, {
-            mediaType: isVideo ? 'video' : 'image',
-            blobUri: sasResponse.targetBlobUri,
+            assetId: sasResponse.assetId,
           });
 
           // Step 2e: Trigger backend analysis workflow (Durable Functions)
