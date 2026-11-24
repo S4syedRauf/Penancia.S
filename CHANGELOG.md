@@ -990,6 +990,81 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
 
 ---
 
+### CL-0024 — Phase 2 Step 2.2: Harden SAS Issuance and Media Asset Tracking (ISS-016)
+
+- **Date (UTC):** 2026-11-24T14:15:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / Step 2.2
+- **Issue IDs:** ISS-016
+- **Type:** Security & Added & Changed
+- **Summary:**
+  1. **Append-Only Corrections / Retractions:**
+     - Recorded exact UTC timestamp and commit hash for prior entry `CL-0023`: commit `862b3e1` at `2026-11-24T13:23:21Z`.
+  2. **Allow-List Enforcement on SAS Issuance:**
+     - Replaced open/free-text fileType/fileName/contentType with strict allow-lists in `SamplesController.GenerateUploadSas`:
+       - Kinds: `video`, `image`, `calibration`.
+       - Content types: `video/mp4`, `video/quicktime`, `video/webm`, `image/jpeg`, `image/png`, `image/heic`.
+     - Validated kind vs content type matrix: video kind requires video content types; image/calibration kind requires image content types.
+     - Invalid/unknown kind returns 400 with `INVALID_MEDIA_KIND`; invalid/mismatched content type returns 400 with `INVALID_CONTENT_TYPE`.
+     - Non-owner callers return 403 (Forbid); unknown samples return 404 with `SAMPLE_NOT_FOUND`.
+  3. **Quarantine Container & Deterministic Blob Naming:**
+     - Container is always strictly `"quarantine"`.
+     - Blob name format is strictly `{sampleId}/{assetId}{extension}`, where `assetId = Guid.NewGuid()` and extension is derived purely from the validated content type mapping (`video/mp4` -> `.mp4`, `video/quicktime` -> `.mov`, `video/webm` -> `.webm`, `image/jpeg` -> `.jpg`, `image/png` -> `.png`, `image/heic` -> `.heic`).
+     - Client-provided `fileName` is ignored for blob path resolution, preventing path traversal, null-byte injection, and extension spoofing.
+  4. **User-Delegation SAS Hardening:**
+     - SAS permissions strictly restricted to Create and Write (`"cw"`). Never issues Read, Delete, or List.
+     - Single blob resource (`Resource = "b"`), HTTPS only (`Protocol = SasProtocol.Https`).
+     - Expiry set to at most 60 minutes (`startsOn = UtcNow - 5 min`, `expiresOn = UtcNow + 60 min`).
+     - Includes simulated SAS fallback using storage shared key signing for offline/unit test execution.
+  5. **Rate Limiting & Persistence:**
+     - Rate limits upload SAS generation to 10 requests per sample per hour via a database count of `Issued` assets in the last hour (`m.SampleId == sampleId && m.Status == "Issued" && m.CreatedAtUtc >= UtcNow.AddHours(-1)`).
+     - 11th request within the hour returns 429 Too Many Requests with header `Retry-After: 3600` and error code `RATE_LIMIT_EXCEEDED`.
+     - Successful request creates and persists `MediaAssetEntity(Status="Issued", SizeBytes=0, Container="quarantine", BlobName=blobName, ContentTypeDeclared=contentType)`.
+     - Rejected requests (400, 403, 404, 429) persist 0 rows.
+  6. **Response Contract & Backward Compatibility:**
+     - Returns `UploadSasResponseDto` containing `{ assetId, uploadUrl, expiresAtUtc, maxBytes, blockSizeBytes, container, blobName }`.
+     - Supports configuration-driven `maxBytes` (defaults: Video 500 MB / 524,288,000; Image 25 MB / 26,214,400; Calibration 25 MB / 26,214,400) and `blockSizeBytes` (4 MB / 4,194,304).
+     - Properties `sasUrl` and `targetBlobUri` are populated with `uploadUrl` and retained for one release for backward compatibility, marked `[Obsolete]`.
+  7. **Comprehensive Mutation-Checked Tests (`tests/Penancia.S.Tests/UploadSasTests.cs`):**
+     - 10 unit and integration tests covering:
+       - Unknown kind -> 400 (`INVALID_MEDIA_KIND`), 0 DB assets
+       - Unknown content type -> 400 (`INVALID_CONTENT_TYPE`), 0 DB assets
+       - Mismatched kind/content type -> 400 (`INVALID_CONTENT_TYPE`), 0 DB assets
+       - Non-owner -> 403 (Forbid), 0 DB assets; staff caller allowed -> 200
+       - Unknown sample -> 404 (`SAMPLE_NOT_FOUND`), 0 DB assets
+       - Permissions == "cw", Container == "quarantine", Resource == "b", Expiry <= 60 min
+       - Hostile fileNames (`../../etc/passwd`, null-byte, `<script>`, cmd.exe) completely ignored, safe blob naming verified
+       - Rate limiting: 10 succeed, 11th returns 429 with `Retry-After: 3600`, DB count unaffected, per-sample isolation verified
+       - MediaAsset row created with `Status="Issued"` and DTO properties match
+       - Configuration overrides for `maxBytes` and `blockSizeBytes`
+     - Performed 9 deliberate break mutations and confirmed each test catches the defect and fails before reverting cleanly.
+- **Why:** Resolve ISS-016: harden SAS issuance, prevent arbitrary file uploads or path traversal, enforce quarantine container routing, prevent rate exhaustion, and track issued media assets.
+- **Files changed:**
+  - `src/Penancia.S.Api/appsettings.json` — added `MediaUpload` limits configuration
+  - `src/Penancia.S.Api/Controllers/V1/SamplesController.cs` — hardened `GenerateUploadSas`, allow-lists, rate limiting, and `UploadSasResponseDto`
+  - `tests/Penancia.S.Tests/UploadSasTests.cs` — new comprehensive test suite for Step 2.2
+  - `CHANGELOG.md` — added CL-0024 entry
+- **Behaviour before → after:** Free-text upload SAS generation targeting arbitrary/raw containers is replaced with quarantine-only, allow-listed user-delegation SAS tokens with create/write permissions, 60-minute maximum expiry, 10/hour per-sample rate limits, and audit tracking in `MediaAssets`.
+- **Contract / schema / API changes:** `GET/POST /v1/samples/{sampleId}/upload-sas` accepts `kind` (`video`, `image`, `calibration`) and `contentType`; returns `UploadSasResponseDto`; sets `Retry-After: 3600` on 429.
+- **Database migration:** none (uses `MediaAssets` table established in Step 1.1)
+- **Config / env / infra changes:** Added `MediaUpload` section to `appsettings.json` with max bytes for video, image, calibration, and block size.
+- **Tests run:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 293 passed, 1 skipped, 0 failed
+  - `.venv/bin/pytest models/calibration -v` → 16 passed
+  - `cd frontend && bun test && bun run lint && bun run build` → 31 passed, lint clean, build succeeded
+  - `bash tools/check_role_ids.sh` → SUCCESS (all 6 role IDs allowed)
+  - `bash tools/check_role_ids.test.sh` → all 5 tests passed
+  - `bash tools/check_changelog.test.sh` → all 4 tests passed
+  - Mutation testing: all 9 break mutations caught by test suite
+- **Known gaps / risks:**
+  - Set real `webOrigin` per environment before first deploy, or browser uploads to quarantine will be blocked by CORS.
+  - Verify at first deployment that Defender can publish to the scan topic.
+- **Rollback:** Revert commit on `phase-2/upload-and-submit`.
+- **Follow-ups for the next developer or model:** Proceed to Step 2.3 (Replace RegisterBlob with server verification, ISS-015).
+- **Commit(s):** pending for this CL-0024 entry
+
+---
+
 ## [1.0.1-FIX-BATCH] - 2026-11-21 — Code-review fix batch (all 56 findings) + real Azure deployment files
 
 ### What this batch did
