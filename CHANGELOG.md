@@ -1373,6 +1373,39 @@ All changes, additions, structural designs, and deployments for the **Penancia.S
   - `bash tools/check_queue_wiring.sh` & `bash tools/check_queue_wiring.test.sh` → PASS (4/4 tests passed).
   - `bash tools/check_changelog.test.sh` → PASS (4/4 tests passed).
   - Mutation testing (3/3 CAUGHT): `C-MissingHeader`, `C-Analyze410`, `C-ScanGateOnSubmit`.
+- **Commit(s):** `7ddb09e` (branch `phase-2/upload-and-submit`)
+
+---
+
+### CL-0031 — Phase 2 Step 2.6 (Lane D): Sample Status Endpoint (`GET /v1/semen/samples/{sampleId}/status`)
+
+- **Date (UTC):** 2026-11-24T19:40:00Z
+- **Author:** Antigravity (Google DeepMind)
+- **Phase / Step:** Phase 2 / Step 2.6 (Lane D)
+- **Issue IDs:** ISS-015, ISS-016
+- **Type:** Added
+- **Prior Commit Record:** `CL-0030` landed at `7ddb09e` on `phase-2/upload-and-submit`.
+- **Summary:**
+  1. **Status Controller (`src/Penancia.S.Api/Controllers/V1/SampleStatusController.cs`):**
+     - Added `GET /v1/semen/samples/{sampleId}/status` in a dedicated new controller file.
+     - Enforces owner or staff authorization (`403 Forbid` otherwise; `404` for unknown or soft-deleted samples).
+     - Returns strictly stored facts: `sampleId`, `state`, per-asset scan details (`assetId`, `kind`, `status`, `scanVerdict`, `scannedAtUtc`, `rejectReason`, `sizeBytes`), `orchestration` (`exists`, `runtimeStatus` via `IOrchestrationStatusReader` / `HttpOrchestrationStatusReader`), and `lastOutboxDispatchedAtUtc`.
+     - Never fabricates clinical scores or percentages.
+  2. **DI Registration (`Program.cs`):** Registered `IOrchestrationStatusReader` -> `HttpOrchestrationStatusReader`.
+  3. **Unit Tests (`tests/Penancia.S.Tests/SampleStatusControllerTests.cs`):** 4 tests covering owner read with real scan verdicts + orchestration + outbox timestamp (and asserting zero fabricated motility/morphology/percentage fields), staff read, non-owner 403, and missing/deleted 404.
+- **Files changed:**
+  - `src/Penancia.S.Api/Controllers/V1/SampleStatusController.cs` — new status controller and `IOrchestrationStatusReader`.
+  - `src/Penancia.S.Api/Program.cs` — registered `IOrchestrationStatusReader`.
+  - `tests/Penancia.S.Tests/SampleStatusControllerTests.cs` — 4 tests.
+  - `CHANGELOG.md` — appended CL-0031 entry.
+- **Tests run & Mutation Results:**
+  - `dotnet test tests/Penancia.S.Tests/Penancia.S.Tests.csproj -c Release` → 369 passed, 1 skipped, 0 failed.
+  - `cd frontend && bun test` → 31 passed, 0 failed.
+  - `bicep build infra/main.bicep` → 0 errors, 5 warnings.
+  - `bash tools/check_role_ids.sh` → PASS (7/7 allowed).
+  - `bash tools/check_queue_wiring.sh` & `bash tools/check_queue_wiring.test.sh` → PASS (4/4 tests passed).
+  - `bash tools/check_changelog.test.sh` → PASS (4/4 tests passed).
+  - Mutation testing (3/3 CAUGHT): `D-OwnerCheck`, `D-DeletedFilter`, `D-ScanVerdictField`.
 - **Commit(s):** pending (branch `phase-2/upload-and-submit`)
 
 ---
